@@ -99,7 +99,7 @@ def _valid_host(host: str) -> bool:
     try:
         ipaddress.ip_address(host)
     except ValueError:
-        return HOST_RE.match(host) is not None
+        return HOST_RE.fullmatch(host) is not None
     return True
 
 
@@ -188,7 +188,7 @@ def _check_entry(label: str, raw: dict[str, Any], seen: set[str]) -> tuple[Devic
     errs: list[str] = []
     name = raw.get("name")
     good_name: str | None = None
-    if not isinstance(name, str) or not NAME_RE.match(name):
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         errs.append(f"{label}: name must be 1–32 characters from [a-z0-9-].")
     elif name in seen:
         errs.append(f"{label}: the name '{name}' is already used by an earlier entry; give each device its own name.")
@@ -247,6 +247,8 @@ def _check_entry(label: str, raw: dict[str, Any], seen: set[str]) -> tuple[Devic
 def load_devices(path: Path) -> Devices:
     try:
         text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise ConfigError(f"The device file {path} isn't UTF-8 text; save it as UTF-8.") from e
     except OSError as e:
         raise ConfigError(f"Can't read the device file {path}: {e.strerror or e}.") from e
     try:

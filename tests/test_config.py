@@ -176,3 +176,17 @@ def test_api_error_fields() -> None:
     e = ApiError(429, "rate_limited", "Slow down.", extra={"k": 1}, retry_after=3)
     assert (e.status, e.code, e.message, e.extra, e.retry_after) == (429, "rate_limited", "Slow down.", {"k": 1}, 3)
     assert str(e) == "Slow down."
+
+
+def test_trailing_newline_rejected_in_name_and_host(tmp_path: Path) -> None:
+    text = 'devices:\n  - {name: "office\\n", host: example.com}\n  - {name: ok, host: "example.com\\n"}\n'
+    result = load_devices(write(tmp_path, text))
+    assert result.devices == ()
+    assert len(result.problems) == 2
+
+
+def test_non_utf8_file_is_config_error(tmp_path: Path) -> None:
+    p = tmp_path / "devices.yaml"
+    p.write_bytes("devices:\n  - {name: x, host: example.com, label: Sal\u00f3n}\n".encode("latin-1"))
+    with pytest.raises(ConfigError, match="UTF-8"):
+        load_devices(p)

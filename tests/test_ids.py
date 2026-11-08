@@ -38,5 +38,5 @@ def test_sort_title() -> None:
 
 
 def test_is_game_id_rejects() -> None:
-    for bad in ("ABCDEFGHIJKLMNOP", "a" * 15, "0" * 16, "../../etc/passwd"):
+    for bad in ("ABCDEFGHIJKLMNOP", "a" * 15, "0" * 16, "../../etc/passwd", game_id("SNES", "x") + "\n"):
         assert not is_game_id(bad)

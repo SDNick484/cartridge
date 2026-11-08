@@ -24,7 +24,7 @@ def game_id(system_id: str, rel_path: str) -> str:
 
 
 def is_game_id(s: str) -> bool:
-    return GAME_ID_RE.match(s) is not None
+    return GAME_ID_RE.fullmatch(s) is not None
 
 
 def rel_path_from_abs(abs_path: str, strip_prefixes: Sequence[str]) -> str | None:
