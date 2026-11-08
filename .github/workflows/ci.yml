@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, for the shared-drift job's --latest check (below). A schedule runs the
+  # whole workflow, so the other jobs also catch a dependency release that breaks us.
+  schedule:
+    - cron: "0 8 * * 1"  # Mondays 8:00
+      timezone: America/Los_Angeles  # 8 a.m. Pacific all year, across daylight saving
+  workflow_dispatch:  # a "Run workflow" button: also runs the --latest check
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy
+      - run: pytest
+      - run: python scripts/check_js.py
+
+  # The files shared with the sibling servers (shared.lock, scripts/sync_shared.py) must
+  # match mcp-server-shared, the source of truth. On pushes and PRs: at the locked commit,
+  # so a copy edited here fails, and a PR is never judged on changes made elsewhere. On the
+  # schedule (or a manual run): also against mcp-server-shared main, so falling behind fails.
+  shared-drift:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}  # for api.github.com's rate limit; raw files are fetched without it
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"  # the oldest supported: keeps the stdlib-only script honest
+      - name: Shared files match the locked commit
+        run: python scripts/sync_shared.py --check
+      - name: Shared files match mcp-server-shared main
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: python scripts/sync_shared.py --check --latest
