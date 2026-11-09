@@ -8,13 +8,16 @@ strings supplied by callers, so tests need no clock.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from .ids import sort_title
+
+QUICK_CHECK_SECONDS = 60.0  # how long a passing integrity check stands for readiness
 
 _MIGRATIONS = [
     # version 1
@@ -206,6 +209,8 @@ def _marks(n: int) -> str:
 class Database:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
+        self._clock: Callable[[], float] = time.monotonic
+        self._checked_at: float | None = None  # when quick_check last passed
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
@@ -227,12 +232,22 @@ class Database:
         self._conn.close()
 
     def ping(self) -> bool:
-        """Readiness: ``PRAGMA quick_check`` passes, so a corrupt database reports not ready."""
+        """Readiness: ``PRAGMA quick_check`` passes, so a corrupt database reports not ready.
+
+        The check reads the whole file, and /healthz is polled (the remote one before auth), so a passing
+        verdict is reused for ``QUICK_CHECK_SECONDS``; in between, ``SELECT 1`` still catches a dead handle.
+        """
         try:
+            now = self._clock()
+            if self._checked_at is not None and now - self._checked_at < QUICK_CHECK_SECONDS:
+                self._conn.execute("SELECT 1").fetchone()
+                return True
             verdict = self._conn.execute("PRAGMA quick_check").fetchone()
         except sqlite3.Error:
             return False
-        return verdict is not None and verdict[0] == "ok"
+        ok = verdict is not None and verdict[0] == "ok"
+        self._checked_at = now if ok else None
+        return ok
 
     def _migrate(self) -> None:
         version = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
