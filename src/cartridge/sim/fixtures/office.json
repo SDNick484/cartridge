@@ -1,0 +1,121 @@
+{
+  "name": "Office",
+  "model": "MiSTer Pi",
+  "systems": [
+    {
+      "id": "SNES",
+      "name": "Super Nintendo",
+      "manufacturer": "Nintendo",
+      "releaseDate": "1990-11-21"
+    },
+    {
+      "id": "Genesis",
+      "name": "Genesis",
+      "manufacturer": "Sega",
+      "releaseDate": "1988-10-29"
+    },
+    {
+      "id": "NES",
+      "name": "NES",
+      "manufacturer": "Nintendo",
+      "releaseDate": "1983-07-15"
+    }
+  ],
+  "launchers": [
+    {
+      "id": "snes",
+      "systemId": "SNES",
+      "available": true
+    },
+    {
+      "id": "nes",
+      "systemId": "NES",
+      "available": true
+    }
+  ],
+  "media": [
+    {
+      "mediaId": 101,
+      "name": "Super Metroid",
+      "system": {
+        "id": "SNES",
+        "name": "Super Nintendo"
+      },
+      "path": "/media/fat/games/SNES/Super Metroid (USA).sfc",
+      "relativePath": "Super Metroid (USA).sfc",
+      "zapScript": "SNES/Super Metroid (USA).sfc"
+    },
+    {
+      "mediaId": 102,
+      "name": "Donkey Kong Country",
+      "system": {
+        "id": "SNES",
+        "name": "Super Nintendo"
+      },
+      "path": "/media/fat/games/SNES/Donkey Kong Country (USA).sfc",
+      "relativePath": "Donkey Kong Country (USA).sfc",
+      "zapScript": "SNES/Donkey Kong Country (USA).sfc"
+    },
+    {
+      "mediaId": 103,
+      "name": "Gunstar Heroes",
+      "system": {
+        "id": "Genesis",
+        "name": "Genesis"
+      },
+      "path": "/media/fat/games/Genesis/Gunstar Heroes (USA).md",
+      "relativePath": "Gunstar Heroes (USA).md",
+      "zapScript": "Genesis/Gunstar Heroes (USA).md"
+    },
+    {
+      "mediaId": 104,
+      "name": "Sonic the Hedgehog",
+      "system": {
+        "id": "Genesis",
+        "name": "Genesis"
+      },
+      "path": "/media/fat/games/Genesis/Sonic the Hedgehog (USA, Europe).md",
+      "relativePath": "Sonic the Hedgehog (USA, Europe).md",
+      "zapScript": "Genesis/Sonic the Hedgehog (USA, Europe).md"
+    },
+    {
+      "mediaId": 105,
+      "name": "Façade & Friends: Part II",
+      "system": {
+        "id": "SNES",
+        "name": "Super Nintendo"
+      },
+      "path": "/media/fat/games/SNES/Façade & Friends - Part II (USA).sfc",
+      "relativePath": "Façade & Friends - Part II (USA).sfc",
+      "zapScript": "SNES/Façade & Friends - Part II (USA).sfc"
+    },
+    {
+      "mediaId": 106,
+      "name": "Contra",
+      "system": {
+        "id": "NES",
+        "name": "NES"
+      },
+      "path": "/media/fat/games/NES/Contra (USA).nes",
+      "relativePath": "Contra (USA).nes",
+      "zapScript": "NES/Contra (USA).nes"
+    }
+  ],
+  "history": [
+    {
+      "systemId": "NES",
+      "systemName": "NES",
+      "mediaName": "Contra",
+      "mediaPath": "/media/fat/games/NES/Contra (USA).nes",
+      "startedAt": "2026-11-06T12:00:00+00:00",
+      "endedAt": "2026-11-06T12:20:00+00:00",
+      "playTime": 1200,
+      "mediaId": 106,
+      "launcherId": "NES",
+      "zapScript": "NES/Contra (USA).nes",
+      "hasCover": false,
+      "sessionSource": "active_media",
+      "sessionConfidence": "exact"
+    }
+  ]
+}

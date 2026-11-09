@@ -1,0 +1,141 @@
+{
+  "name": "Family Room",
+  "model": "SuperStation One",
+  "systems": [
+    {
+      "id": "SNES",
+      "name": "Super Nintendo",
+      "manufacturer": "Nintendo",
+      "releaseDate": "1990-11-21"
+    },
+    {
+      "id": "Genesis",
+      "name": "Genesis",
+      "manufacturer": "Sega",
+      "releaseDate": "1988-10-29"
+    },
+    {
+      "id": "NES",
+      "name": "NES",
+      "manufacturer": "Nintendo",
+      "releaseDate": "1983-07-15"
+    }
+  ],
+  "launchers": [
+    {
+      "id": "snes",
+      "systemId": "SNES",
+      "available": true
+    },
+    {
+      "id": "genesis",
+      "systemId": "Genesis",
+      "available": true
+    },
+    {
+      "id": "nes",
+      "systemId": "NES",
+      "available": true
+    }
+  ],
+  "media": [
+    {
+      "mediaId": 1,
+      "name": "Super Metroid",
+      "system": {
+        "id": "SNES",
+        "name": "Super Nintendo"
+      },
+      "path": "/media/fat/games/SNES/Super Metroid (USA).sfc",
+      "relativePath": "Super Metroid (USA).sfc",
+      "zapScript": "SNES/Super Metroid (USA).sfc",
+      "image": true
+    },
+    {
+      "mediaId": 2,
+      "name": "Donkey Kong Country",
+      "system": {
+        "id": "SNES",
+        "name": "Super Nintendo"
+      },
+      "path": "/media/fat/games/SNES/Donkey Kong Country (USA).sfc",
+      "relativePath": "Donkey Kong Country (USA).sfc",
+      "zapScript": "SNES/Donkey Kong Country (USA).sfc"
+    },
+    {
+      "mediaId": 3,
+      "name": "Gunstar Heroes",
+      "system": {
+        "id": "Genesis",
+        "name": "Genesis"
+      },
+      "path": "/media/fat/games/Genesis/Gunstar Heroes (USA).md",
+      "relativePath": "Gunstar Heroes (USA).md",
+      "zapScript": "Genesis/Gunstar Heroes (USA).md"
+    },
+    {
+      "mediaId": 4,
+      "name": "Sonic the Hedgehog",
+      "system": {
+        "id": "Genesis",
+        "name": "Genesis"
+      },
+      "path": "/media/fat/games/Genesis/Sonic the Hedgehog (USA, Europe).md",
+      "relativePath": "Sonic the Hedgehog (USA, Europe).md",
+      "zapScript": "Genesis/Sonic the Hedgehog (USA, Europe).md"
+    },
+    {
+      "mediaId": 5,
+      "name": "Façade & Friends: Part II",
+      "system": {
+        "id": "SNES",
+        "name": "Super Nintendo"
+      },
+      "path": "/media/fat/games/SNES/Façade & Friends - Part II (USA).sfc",
+      "relativePath": "Façade & Friends - Part II (USA).sfc",
+      "zapScript": "SNES/Façade & Friends - Part II (USA).sfc"
+    },
+    {
+      "mediaId": 6,
+      "name": "Family Only Quest",
+      "system": {
+        "id": "NES",
+        "name": "NES"
+      },
+      "path": "/media/fat/games/NES/Family Only Quest (USA).nes",
+      "relativePath": "Family Only Quest (USA).nes",
+      "zapScript": "NES/Family Only Quest (USA).nes"
+    }
+  ],
+  "history": [
+    {
+      "systemId": "SNES",
+      "systemName": "Super Nintendo",
+      "mediaName": "Super Metroid",
+      "mediaPath": "/media/fat/games/SNES/Super Metroid (USA).sfc",
+      "startedAt": "2026-11-05T19:00:00+00:00",
+      "endedAt": "2026-11-05T19:45:00+00:00",
+      "playTime": 2700,
+      "mediaId": 1,
+      "launcherId": "SNES",
+      "zapScript": "SNES/Super Metroid (USA).sfc",
+      "hasCover": false,
+      "sessionSource": "active_media",
+      "sessionConfidence": "exact"
+    },
+    {
+      "systemId": "Genesis",
+      "systemName": "Genesis",
+      "mediaName": "Sonic the Hedgehog",
+      "mediaPath": "/media/fat/games/Genesis/Sonic the Hedgehog (USA, Europe).md",
+      "startedAt": "2026-11-04T20:00:00+00:00",
+      "endedAt": "2026-11-04T20:10:00+00:00",
+      "playTime": 600,
+      "launcherId": "Genesis",
+      "zapScript": "Genesis/Sonic the Hedgehog (USA, Europe).md",
+      "hasCover": false,
+      "sessionSource": "active_media",
+      "sessionConfidence": "exact"
+    }
+  ]
+}

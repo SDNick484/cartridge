@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# OpenRC service for Cartridge, e.g. in an Alpine LXC. Installed as /etc/init.d/cartridge by install.sh.
+# Settings live in /etc/conf.d/cartridge, which run.sh loads (so they reach the process whatever
+# OpenRC does with its own environment); devices in /etc/cartridge/devices.yaml; state in /var/lib/cartridge.
+
+name="cartridge"
+description="Cartridge: browser game launcher for MiSTer FPGA devices"
+
+# supervise-daemon restarts the server if it exits (respawn_* below).
+supervisor="supervise-daemon"
+command="/opt/cartridge/run.sh"
+command_user="cartridge:cartridge"
+directory="/var/lib/cartridge"
+output_log="/var/log/cartridge/cartridge.log"
+error_log="/var/log/cartridge/cartridge.log"
+respawn_delay=5
+respawn_max=10
+respawn_period=300
+
+depend() {
+	need net
+	after firewall
+}
+
+start_pre() {
+	checkpath --directory --mode 0750 --owner cartridge:cartridge /var/log/cartridge
+	checkpath --directory --mode 0700 --owner cartridge:cartridge /var/lib/cartridge
+}

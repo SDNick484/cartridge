@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Cartridge</title>
+<link rel="stylesheet" href="/static/style.css">
+<script type="module" src="/static/app.js"></script>
+</head>
+<body>
+<header class="top">
+  <h1 class="brand">Cartridge</h1>
+  <button id="device-pill" class="pill" type="button" aria-haspopup="dialog">Choose a device</button>
+  <input id="search" class="search" type="search" placeholder="Search games" aria-label="Search games" autocomplete="off">
+  <button id="tv-toggle" class="btn tv-toggle" type="button" aria-pressed="false">TV mode</button>
+</header>
+
+<main>
+  <div id="conn" class="banner" role="status" hidden>Live updates paused; reconnecting&hellip;</div>
+  <nav id="chips" class="chips" aria-label="Filters"></nav>
+  <label id="only-wrap" class="only" hidden>
+    <input id="only-device" type="checkbox" checked>
+    <span id="only-text">Only games for this device</span>
+  </label>
+  <section id="empty" class="empty" hidden></section>
+  <div id="grid" class="grid"></div>
+  <div id="sentinel" class="sentinel" aria-hidden="true"></div>
+</main>
+
+<dialog id="game-sheet" class="sheet" aria-labelledby="sheet-title">
+  <div class="sheet-bar">
+    <button class="btn" type="button" data-close>Close</button>
+  </div>
+  <div class="sheet-body">
+    <div class="frame big"><img id="sheet-art" alt=""></div>
+    <div class="sheet-info">
+      <h2 id="sheet-title"></h2>
+      <p id="sheet-system" class="muted"></p>
+      <ul id="sheet-devices" class="plain"></ul>
+      <button id="star" class="btn" type="button" aria-pressed="false">Add to favorites</button>
+      <p id="remote-note" class="note" hidden>Browse only: launch from home</p>
+      <button id="play" class="btn primary big" type="button" autofocus>Play</button>
+      <p id="play-reason" class="muted"></p>
+      <p id="sheet-error" class="error" role="alert" hidden></p>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="device-sheet" class="sheet" aria-labelledby="devices-heading">
+  <div class="sheet-bar">
+    <h2 id="devices-heading">Devices</h2>
+    <button class="btn" type="button" data-close>Close</button>
+  </div>
+  <div id="device-list" class="device-list"></div>
+</dialog>
+
+<dialog id="confirm-sheet" class="sheet small" aria-label="Please confirm">
+  <form method="dialog">
+    <div id="confirm-body" class="confirm-body"></div>
+    <div class="actions">
+      <button id="confirm-no" class="btn" value="no">Cancel</button>
+      <button id="confirm-yes" class="btn primary" value="yes">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" popover="manual" role="status" aria-live="polite"></div>
+</body>
+</html>

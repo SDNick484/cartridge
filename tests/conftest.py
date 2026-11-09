@@ -1,0 +1,91 @@
+import asyncio
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
+
+import httpx
+import pytest
+
+from cartridge.config import load_devices, load_settings
+from cartridge.core import Background, Core, build_core, close_core
+from cartridge.db import Database
+from cartridge.registry import DeviceRegistry
+from cartridge.sim.harness import SimDevice, Simulation
+from cartridge.web.lan import build_lan_app
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.fixture
+async def sim(tmp_path: Path) -> AsyncIterator[Simulation]:
+    s = Simulation(tmp_path)
+    await s.add("family_room")
+    await s.add("office")
+    yield s
+    await s.stop()
+
+
+def family(sim: Simulation) -> SimDevice:
+    return sim.devices[0]
+
+
+def office(sim: Simulation) -> SimDevice:
+    return sim.devices[1]
+
+
+@pytest.fixture
+def db() -> Iterator[Database]:
+    database = Database.memory()
+    yield database
+    database.close()
+
+
+@pytest.fixture
+async def registry(sim: Simulation, tmp_path: Path) -> AsyncIterator[DeviceRegistry]:
+    reg = DeviceRegistry(load_devices(sim.write_devices(tmp_path / "devices.yaml")))
+    await reg.start()
+    for _ in range(500):
+        if all(reg.status(n).online for n in reg.names()):
+            break
+        await asyncio.sleep(0.01)
+    yield reg
+    await reg.close()
+
+
+@pytest.fixture
+async def core(sim: Simulation, tmp_path: Path) -> AsyncIterator[Core]:
+    """A synced core over the simulated devices, built the way `serve` builds it; art never leaves the machine."""
+    settings = load_settings({"REMOTE_ENABLED": "0", "DATA_DIR": str(tmp_path / "data"), "ART_ONLINE": "0"})
+    devices = load_devices(sim.write_devices(tmp_path / "devices.yaml"))
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    built = await build_core(settings, devices, http=http)
+    # An interval this long never fires; the startup sync and history ingest are what the tests start from.
+    background = Background(built, interval=86400)
+    background.start()
+    names = built.registry.names()
+
+    def ready() -> bool:
+        states = [built.catalog.sync_state(n) for n in names]
+        synced = all(st is not None and st.status == "ok" and not st.running for st in states)
+        ingested = all(built.db.history_as_of(n) is not None for n in names)
+        # Only the periodic loop is left: the startup art prefetch has finished too, so it can't race a test.
+        return synced and ingested and len(background._tasks) == 1
+
+    for _ in range(2000):
+        if ready():
+            break
+        await asyncio.sleep(0.01)
+    else:
+        await close_core(built)
+        pytest.fail("the core fixture's startup sync and history ingest never finished")
+    yield built
+    await close_core(built)
+
+
+@pytest.fixture
+async def lan(core: Core) -> AsyncIterator[httpx.AsyncClient]:
+    app = build_lan_app(core, frozenset({"cartridge.local"}))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://cartridge.local") as client:
+        yield client

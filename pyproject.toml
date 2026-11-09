@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cartridge"
+version = "0.1.0"
+description = "Self-hosted browser game launcher for MiSTer FPGA devices, through Zaparoo Core"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Cartridge contributors" }]
+requires-python = ">=3.11"
+keywords = ["mister", "mister-fpga", "fpga", "zaparoo", "retro-gaming", "launcher"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment",
+]
+dependencies = [
+    "starlette>=0.40",
+    "uvicorn>=0.31",
+    "aiohttp>=3.9",
+    "httpx>=0.27",
+    "pyjwt[crypto]>=2.10",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "anyio>=4", "ruff>=0.6", "mypy>=1.11", "playwright>=1.45", "types-PyYAML"]
+
+[project.scripts]
+cartridge = "cartridge.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cartridge = ["sim/fixtures/*.json", "static/*", "static/fonts/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["e2e: Playwright UI smoke (run with -m e2e)"]
+addopts = "-m 'not e2e'"
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+files = ["src"]
+strict = true

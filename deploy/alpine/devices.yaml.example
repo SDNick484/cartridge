@@ -1,0 +1,22 @@
+# /etc/cartridge/devices.yaml: your MiSTers. Edit, then: rc-service cartridge restart
+# Validate it and reach each device with `cartridge check` (README, "Troubleshooting").
+devices:
+  - name: family-room        # a-z, 0-9, hyphen; 1-32 characters; how the app addresses the device
+    label: Family Room       # shown in the UI
+    model: MiSTer            # free text
+    platform: mister
+    transport: zaparoo
+    host: 192.0.2.10         # IP address or hostname of the MiSTer
+    port: 7497               # Zaparoo Core's API port
+    auth: legacy
+    # Only if Zaparoo reports absolute paths that differ between devices sharing one library
+    # (README, "Device config"):
+    #strip_prefixes: [/media/fat/games]
+  - name: office
+    label: Office
+    model: MiSTer
+    platform: mister
+    transport: zaparoo
+    host: 192.0.2.11
+    port: 7497
+    auth: legacy
