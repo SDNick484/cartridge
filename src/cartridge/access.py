@@ -64,7 +64,7 @@ def policy_from_settings(settings: Settings) -> AccessPolicy:
         raise ConfigError(
             "The remote app needs CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD; set them to your Cloudflare Access values."
         )
-    if not re.fullmatch(r"[A-Za-z0-9.-]+", team):
+    if not re.fullmatch(r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9-]+", team):
         raise ConfigError(
             "CF_ACCESS_TEAM_DOMAIN must be a hostname such as example.cloudflareaccess.com, without a path or port."
         )

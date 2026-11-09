@@ -15,7 +15,14 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from cartridge.access import AccessMiddleware, AccessPolicy, AccessVerifier, KeyResolver, policy_from_settings
+from cartridge.access import (
+    AccessDenied,
+    AccessMiddleware,
+    AccessPolicy,
+    AccessVerifier,
+    KeyResolver,
+    policy_from_settings,
+)
 from cartridge.config import load_settings
 from cartridge.errors import ConfigError
 
@@ -116,14 +123,25 @@ def alg_none() -> str:
 @pytest.mark.parametrize(
     "bad",
     [
-        alg_none(),
-        jwt.encode(claims(), "x" * 64, algorithm="HS256"),
         jwt.encode(claims(exp=True), KEY, algorithm="RS256"),
         jwt.encode(claims(iat=True), KEY, algorithm="RS256"),
     ],
-    ids=["alg-none", "hs256", "no-exp", "no-iat"],
+    ids=["no-exp", "no-iat"],
 )
-async def test_downgrades_and_missing_claims_are_forbidden(bad: str) -> None:
+async def test_missing_claims_are_forbidden(bad: str) -> None:
+    assert_forbidden(await make_client().get("/", headers=hdr(bad)))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [alg_none(), jwt.encode(claims(), "x" * 64, algorithm="HS256")],
+    ids=["alg-none", "hs256"],
+)
+async def test_only_rs256_is_accepted(bad: str) -> None:
+    # Asserts the reason, so a widened `algorithms` can't hide behind an unrelated key error.
+    verifier = AccessVerifier(AccessPolicy(TEAM, (AUD,)), key_resolver=resolve)
+    with pytest.raises(AccessDenied, match="alg value is not allowed"):
+        await verifier.verify(bad)
     assert_forbidden(await make_client().get("/", headers=hdr(bad)))
 
 
@@ -270,8 +288,9 @@ async def test_policy_normalises_scheme_case_and_slash() -> None:
     assert policy_from_settings(s).team_domain == "team.example.com"
 
 
-async def test_policy_refuses_malformed_domain() -> None:
-    s = replace(load_settings(ENV), cf_access_team_domain="team.example.com/path")
+@pytest.mark.parametrize("bad", ["team.example.com/path", ".", "-", "a..b", "-a.com", "a-.com", "nodot"])
+async def test_policy_refuses_malformed_domain(bad: str) -> None:
+    s = replace(load_settings(ENV), cf_access_team_domain=bad)
     with pytest.raises(ConfigError, match="CF_ACCESS_TEAM_DOMAIN"):
         policy_from_settings(s)
 
