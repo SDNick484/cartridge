@@ -292,6 +292,24 @@ async def test_devices_include_misconfigured(core: Core, tmp_path: Path) -> None
     assert devices[0]["now_playing"] is None and devices[0]["sync"] is None
 
 
+async def test_games_accepts_a_misconfigured_device(core: Core, sim: Simulation, tmp_path: Path) -> None:
+    path = tmp_path / "mixed.yaml"
+    path.write_text(
+        sim.devices_yaml() + "- {name: cabinet, label: Cabinet, host: 192.0.2.15, platform: batocera}\n",
+        encoding="utf-8",
+    )
+    reg = DeviceRegistry(load_devices(path))
+    assert reg.target("cabinet") is None and reg.info("cabinet") is not None
+    mixed = dataclasses.replace(core, registry=reg, catalog=Catalog(core.db, reg, core.hub))
+    app = build_lan_app(mixed, HOSTS)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://cartridge.local") as client:
+        r = await client.get("/api/games", params={"device": "cabinet"})
+        assert r.status_code == 200 and r.json()["games"] == [] and r.json()["total"] == 0
+        r = await client.get("/api/games", params={"device": "cabinet", "only_device": "0", "limit": 500})
+        assert r.status_code == 200 and r.json()["total"] > 0
+        assert (await client.get("/api/games", params={"device": "nope"})).status_code == 404
+
+
 async def test_systems_and_recent(lan: httpx.AsyncClient) -> None:
     systems = (await lan.get("/api/systems")).json()
     assert systems and set(systems[0]) == {"id", "name", "manufacturer", "game_count"}

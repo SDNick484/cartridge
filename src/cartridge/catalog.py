@@ -326,7 +326,7 @@ class Catalog:
         offset: int,
         limit: int,
     ) -> GamePage:
-        if device is not None and self.registry.target(device) is None:
+        if device is not None and self.registry.info(device) is None:  # misconfigured devices are known, just empty
             raise KeyError(device)
         rows, total = self.db.query_games(
             system=system,

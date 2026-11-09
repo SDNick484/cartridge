@@ -24,6 +24,7 @@ let list = null;
 export const getDevices = () => devices;
 export const getSelected = () => devices.find((d) => d.name === selected) ?? null;
 export const deviceByName = (name) => devices.find((d) => d.name === name) ?? null;
+const usable = (device) => device.state !== "misconfigured"; // never offered, never auto-selected
 export const stateText = (device) => STATE_TEXT[device.state] ?? device.state;
 
 export function initDevices({ pillButton, deviceSheet, deviceList, isRemote }) {
@@ -42,10 +43,10 @@ export function setDevices(next) {
   if (!loaded) {
     loaded = true;
     const saved = loadPref(KEY);
-    if (saved && devices.some((d) => d.name === saved)) selected = saved;
-    else if (devices.length === 1) selected = devices[0].name;
+    if (saved && devices.some((d) => d.name === saved && usable(d))) selected = saved;
+    else if (devices.length === 1 && usable(devices[0])) selected = devices[0].name;
   }
-  if (selected && !devices.some((d) => d.name === selected)) selected = null;
+  if (selected && !devices.some((d) => d.name === selected && usable(d))) selected = null;
   changed(before);
 }
 
@@ -137,15 +138,17 @@ function card(device) {
   const actions = [
     isSelected
       ? el("span", { class: "badge", text: "Selected" })
-      : el("button", {
-          type: "button",
-          class: "btn primary",
-          text: `Use ${device.label}`,
-          dataset: { role: "use" },
-          on: { click: () => pick(device) },
-        }),
+      : usable(device)
+        ? el("button", {
+            type: "button",
+            class: "btn primary",
+            text: `Use ${device.label}`,
+            dataset: { role: "use" },
+            on: { click: () => pick(device) },
+          })
+        : null,
   ];
-  if (!remote) {
+  if (!remote && usable(device)) {
     actions.push(
       el("button", {
         type: "button",

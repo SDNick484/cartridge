@@ -211,3 +211,16 @@ def test_sheet_reason_for_a_game_not_on_the_device(server: str, open_page: OpenP
     expect(reason).to_have_text("Family Only Quest isn't on Office.")
     expect(reason).not_to_contain_text("core")
     no_console_problems(page)
+
+
+def test_misconfigured_device_is_never_offered(misconfigured_server: str, open_page: OpenPage) -> None:
+    stale = "window.localStorage.setItem('cartridge.device', 'cabinet');"
+    page = open_page(misconfigured_server, init_script=stale)
+    expect(tiles(page).first).to_be_visible()  # the grid loads; the stale choice was ignored
+    expect(page.locator("#device-pill")).to_contain_text("Choose a device")
+    page.locator("#device-pill").click()
+    sheet = page.locator("#device-sheet")
+    expect(sheet.locator(".device-card", has_text="Cabinet")).to_contain_text("Misconfigured")
+    expect(sheet.get_by_role("button", name="Use Cabinet")).to_have_count(0)
+    expect(sheet.get_by_role("button", name="Use Office")).to_have_count(1)
+    no_console_problems(page)
