@@ -292,7 +292,9 @@ async def test_devices_include_misconfigured(core: Core, tmp_path: Path) -> None
 async def test_systems_and_recent(lan: httpx.AsyncClient) -> None:
     systems = (await lan.get("/api/systems")).json()
     assert systems and set(systems[0]) == {"id", "name", "manufacturer", "game_count"}
-    assert (await lan.get("/api/recent")).json() == []
+    # The core fixture's Background has ingested each device's history, as `serve` does at startup.
+    recent = (await lan.get("/api/recent")).json()
+    assert [r["title"] for r in recent] == ["Contra", "Super Metroid", "Sonic the Hedgehog"]
 
 
 async def test_games_api(lan: httpx.AsyncClient) -> None:

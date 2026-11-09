@@ -155,6 +155,13 @@ class Catalog:
         # Shielded so a cancelled caller (a closed HTTP request) can't cancel the run others wait on.
         return await asyncio.shield(task)
 
+    async def cancel_runs(self) -> None:
+        """Cancel every sync in flight and wait for each to record itself as interrupted (shutdown)."""
+        runs = list(self._running.values())
+        for run in runs:
+            run.cancel()
+        await asyncio.gather(*runs, return_exceptions=True)
+
     async def sync_now(self, device: str) -> SyncResult:
         """A user-requested sync: joining a run in flight is free, starting one takes a token."""
         if self.registry.target(device) is None:

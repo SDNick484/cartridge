@@ -5,13 +5,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from cartridge.art import ArtCache
-from cartridge.catalog import Catalog
 from cartridge.config import load_devices, load_settings
-from cartridge.core import Core
+from cartridge.core import Background, Core, build_core, close_core
 from cartridge.db import Database
-from cartridge.events import EventHub
-from cartridge.launch import LaunchService
 from cartridge.registry import DeviceRegistry
 from cartridge.sim.harness import SimDevice, Simulation
 from cartridge.web.lan import build_lan_app
@@ -59,19 +55,22 @@ async def registry(sim: Simulation, tmp_path: Path) -> AsyncIterator[DeviceRegis
 
 
 @pytest.fixture
-async def core(sim: Simulation, db: Database, registry: DeviceRegistry, tmp_path: Path) -> AsyncIterator[Core]:
-    """A synced core over the simulated devices; art never leaves the machine."""
+async def core(sim: Simulation, tmp_path: Path) -> AsyncIterator[Core]:
+    """A synced core over the simulated devices, built the way `serve` builds it; art never leaves the machine."""
     settings = load_settings({"REMOTE_ENABLED": "0", "DATA_DIR": str(tmp_path / "data"), "ART_ONLINE": "0"})
-    hub = EventHub()
-    registry.subscribe(lambda e: hub.publish({"type": "device", "device": e.device}))
-    catalog = Catalog(db, registry, hub)
-    await catalog.sync("family-room")
-    await catalog.sync("office")
+    devices = load_devices(sim.write_devices(tmp_path / "devices.yaml"))
     http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
-    art = ArtCache(db, registry, catalog, tmp_path / "art", http=http, online=False, version="0.1.0")
-    yield Core(settings, db, registry, catalog, art, hub, LaunchService(catalog, registry, db, hub))
-    await art.close()
-    await http.aclose()
+    built = await build_core(settings, devices, http=http)
+    # An interval this long never fires; the startup sync and history ingest are what the tests start from.
+    Background(built, interval=86400).start()
+    for _ in range(1000):
+        states = [built.catalog.sync_state(n) for n in built.registry.names()]
+        synced = all(st is not None and st.status and not st.running for st in states)
+        if synced and built.db.recent_history(1):
+            break
+        await asyncio.sleep(0.01)
+    yield built
+    await close_core(built)
 
 
 @pytest.fixture
