@@ -58,13 +58,15 @@ SAFE_METHODS = frozenset({"GET", "HEAD"})
 WILDCARD_BINDS = frozenset({"", "0.0.0.0", "::"})
 MAX_BODY = 4096
 
-LAN_WRITE_ROUTES: list[tuple[str, str]] = [
-    ("POST", "/api/launch"),
-    ("POST", "/api/devices/{name}/menu"),
-    ("POST", "/api/devices/{name}/sync"),
-    ("POST", "/api/favorites/{id}"),
-    ("DELETE", "/api/favorites/{id}"),
+# (path, methods, handler name): the one table write_routes() builds from and LAN_WRITE_ROUTES lists,
+# so tests that iterate the latter can't miss a route.
+WRITE_SPECS: list[tuple[str, tuple[str, ...], str]] = [
+    ("/api/launch", ("POST",), "launch"),
+    ("/api/devices/{name}/menu", ("POST",), "menu"),
+    ("/api/devices/{name}/sync", ("POST",), "sync"),
+    ("/api/favorites/{id}", ("POST", "DELETE"), "favorite"),
 ]
+LAN_WRITE_ROUTES: list[tuple[str, str]] = [(m, path) for path, methods, _ in WRITE_SPECS for m in methods]
 
 
 def default_lan_hosts(bind_host: str) -> frozenset[str]:
@@ -245,12 +247,8 @@ def write_routes(core: Core) -> list[BaseRoute]:
             raise ApiError(404, "unknown_game", "That game isn't in the catalog.")
         return JSONResponse({"game": game_id, "favorite": on})
 
-    return [
-        Route("/api/launch", launch, methods=["POST"]),
-        Route("/api/devices/{name}/menu", menu, methods=["POST"]),
-        Route("/api/devices/{name}/sync", sync, methods=["POST"]),
-        Route("/api/favorites/{id}", favorite, methods=["POST", "DELETE"]),
-    ]
+    handlers = {"launch": launch, "menu": menu, "sync": sync, "favorite": favorite}
+    return [Route(path, handlers[name], methods=list(methods)) for path, methods, name in WRITE_SPECS]
 
 
 def _log_failure(task: asyncio.Future[object]) -> None:

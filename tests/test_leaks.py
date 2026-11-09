@@ -20,8 +20,8 @@ from cartridge.sim.harness import Simulation
 from cartridge.web.lan import LAN_WRITE_ROUTES, build_lan_app
 from cartridge.web.remote import build_remote_app
 from tests.conftest import family, office
-from tests.test_web_lan import METROID, SONIC, W, wait_for
-from tests.test_web_remote import _scope, make_verifier, token
+from tests.helpers import W, make_verifier, scope, token, wait_for
+from tests.test_web_lan import METROID, SONIC
 
 pytestmark = pytest.mark.anyio
 
@@ -48,9 +48,9 @@ def leaks(bodies: list[tuple[str, Any]], needles: list[str]) -> list[tuple[str, 
 
 
 def needle_list(core: Core, sim: Simulation) -> list[str]:
-    raw: set[str] = {"/media/", "127.0.0.1"}
+    raw: set[str] = {"/media/", "127.0.0.1", LAN_HOST}
     for dev in sim.devices:
-        raw.add(f"{dev.fake.host}:{dev.fake.port}")
+        raw.update((dev.fake.host, f"{dev.fake.host}:{dev.fake.port}"))
         for m in dev.fake.media:
             raw.update((m["path"], m["relativePath"]))
     rows = core.db._conn.execute("SELECT abs_path, rel_path FROM device_media").fetchall()
@@ -67,7 +67,7 @@ async def sse_bodies(core: Core, app: Any, headers: list[tuple[bytes, bytes]], m
         if message["type"] == "http.response.body":
             chunks.put_nowait(message.get("body", b""))
 
-    task = asyncio.create_task(app(_scope("/api/events", headers), inbox.get, send))
+    task = asyncio.create_task(app(scope("/api/events", headers), inbox.get, send))
     await wait_for(lambda: core.hub.client_count(mode) == 1)  # type: ignore[arg-type]
     core.hub.publish({"type": "device", "device": "family-room"})
     core.hub.publish({"type": "sync.started", "device": "office"})
@@ -104,6 +104,7 @@ async def test_no_response_leaks_a_path_or_host(core: Core, sim: Simulation) -> 
     verifier = make_verifier()
     lan_app = build_lan_app(core, frozenset({LAN_HOST}))
     remote_app = build_remote_app(core, verifier)
+    needles = needle_list(core, sim)  # before the scenario edits the fakes' media
     bodies: list[tuple[str, Any]] = []
 
     def record(label: str, r: httpx.Response) -> httpx.Response:
@@ -170,12 +171,16 @@ async def test_no_response_leaks_a_path_or_host(core: Core, sim: Simulation) -> 
         assert playing.json()["now_playing"]["game"] == METROID
         unknown = record("unknown", await lan.post("/api/launch", content=launch_body("family-room", "x"), headers=W))
         assert unknown.status_code == 404 and unknown.json()["code"] == "unknown_game"
-        for method, path in LAN_WRITE_ROUTES[1:]:
-            if method == "DELETE" or path.endswith("/menu"):
-                continue
+        writes = [  # (method, path template, expected status), one per LAN_WRITE_ROUTES entry but launch and menu
+            ("POST", "/api/devices/{name}/sync", 202),
+            ("POST", "/api/favorites/{id}", 200),
+            ("DELETE", "/api/favorites/{id}", 200),
+        ]
+        for method, path, status in writes:
+            assert (method, path) in LAN_WRITE_ROUTES
             url = path.format(name="office", id=SONIC)
-            record(f"lan {method} {url}", await lan.request(method, url, content=b"{}", headers=W))
-        record("lan unfavorite", await lan.request("DELETE", f"/api/favorites/{SONIC}", content=b"{}", headers=W))
+            r = record(f"lan {method} {url}", await lan.request(method, url, content=b"{}", headers=W))
+            assert r.status_code == status, url
         await wait_for(lambda: not core.catalog.sync_running("office"))
         menu = record("lan menu", await lan.post("/api/devices/family-room/menu", content=b"{}", headers=W))
         assert menu.status_code == 200
@@ -189,7 +194,6 @@ async def test_no_response_leaks_a_path_or_host(core: Core, sim: Simulation) -> 
         assert gone.status_code == 410 and gone.json()["code"] == "gone"
         assert office(sim).fake.media  # untouched
 
-    needles = needle_list(core, sim)
     assert len(needles) > 10 and "/media/" in needles
     assert len(bodies) > 40
     for label in ("lan sse hello", "remote sse hello"):

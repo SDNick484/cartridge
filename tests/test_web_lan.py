@@ -18,27 +18,19 @@ from cartridge.sim.harness import Simulation
 from cartridge.web.common import SECURITY_HEADERS
 from cartridge.web.lan import LAN_WRITE_ROUTES, build_lan_app, default_lan_hosts
 from tests.conftest import family, office
+from tests.helpers import W, wait_for
 
 pytestmark = pytest.mark.anyio
 
 SONIC = game_id("Genesis", "Sonic the Hedgehog (USA, Europe).md")
 METROID = game_id("SNES", "Super Metroid (USA).sfc")
 FAMILY_ONLY = game_id("NES", "Family Only Quest (USA).nes")
-W = {"Content-Type": "application/json", "X-Cartridge": "1"}
 HOSTS = frozenset({"cartridge.local"})
 
 
 def launch_body(**over: Any) -> dict[str, Any]:
     body: dict[str, Any] = {"device": "family-room", "game": SONIC, "replace": False, "request_id": str(uuid.uuid4())}
     return {**body, **over}
-
-
-async def wait_for(predicate: Any) -> None:
-    for _ in range(500):
-        if predicate():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("condition never became true")
 
 
 # -- guards ---------------------------------------------------------------------------------------

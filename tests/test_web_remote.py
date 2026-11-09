@@ -1,48 +1,26 @@
 import asyncio
 import json
-import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
-from cartridge.access import AccessPolicy, AccessVerifier
 from cartridge.core import Core
 from cartridge.db import Database
 from cartridge.ids import game_id
 from cartridge.sim.harness import Simulation
-from cartridge.web.common import SECURITY_HEADERS
+from cartridge.web.common import SECURITY_HEADERS, read_routes
 from cartridge.web.lan import LAN_WRITE_ROUTES
 from cartridge.web.remote import build_remote_app
+from tests.helpers import jwt_header, make_verifier, scope, token
 
 pytestmark = pytest.mark.anyio
 
-TEAM = "team.cloudflareaccess.com"
-AUD = "aud-tag"
-KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 SONIC = game_id("Genesis", "Sonic the Hedgehog (USA, Europe).md")
-
-
-def token(*, aud: str = AUD, exp_in: int = 600) -> str:
-    now = int(time.time())
-    claims = {"aud": [aud], "iss": f"https://{TEAM}", "iat": now - 5, "exp": now + exp_in}
-    return jwt.encode(claims, KEY, algorithm="RS256")
-
-
-def jwt_header(**kw: Any) -> dict[str, str]:
-    return {"Cf-Access-Jwt-Assertion": token(**kw)}
-
-
-async def _resolve(_token: str) -> Any:
-    return KEY.public_key()
-
-
-def make_verifier() -> AccessVerifier:
-    return AccessVerifier(AccessPolicy(TEAM, (AUD,)), key_resolver=_resolve)
 
 
 @pytest.fixture
@@ -50,22 +28,6 @@ async def remote(core: Core) -> AsyncIterator[httpx.AsyncClient]:
     app = build_remote_app(core, make_verifier())
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://games.example.com") as client:
         yield client
-
-
-def _scope(path: str, headers: list[tuple[bytes, bytes]]) -> dict[str, Any]:
-    return {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "GET",
-        "scheme": "http",
-        "path": path,
-        "raw_path": path.encode(),
-        "query_string": b"",
-        "headers": headers,
-        "client": ("192.0.2.50", 5000),
-        "server": ("games.example.com", 80),
-    }
 
 
 async def sse_frames(app: Any, headers: list[tuple[bytes, bytes]], count: int = 3) -> list[str]:
@@ -77,7 +39,7 @@ async def sse_frames(app: Any, headers: list[tuple[bytes, bytes]], count: int = 
         if message["type"] == "http.response.body":
             chunks.put_nowait(message.get("body", b""))
 
-    task = asyncio.create_task(app(_scope("/api/events", headers), inbox.get, send))
+    task = asyncio.create_task(app(scope("/api/events", headers), inbox.get, send))
     frames: list[str] = []
     buf = b""
     try:
@@ -116,7 +78,7 @@ async def test_no_jwt_forbidden(remote: httpx.AsyncClient) -> None:
 @pytest.mark.parametrize("bad", [{"aud": "other"}, {"exp_in": -120}], ids=["aud", "expired"])
 async def test_bad_jwt_forbidden(remote: httpx.AsyncClient, bad: dict[str, Any]) -> None:
     r = await remote.get("/api/games", headers=jwt_header(**bad))
-    assert r.status_code == 403
+    assert r.status_code == 403 and r.json()["code"] == "forbidden"
 
 
 async def test_forbidden_carries_security_headers(remote: httpx.AsyncClient) -> None:
@@ -154,9 +116,22 @@ async def test_healthz_not_ready(core: Core) -> None:
     core.db = Database.memory()  # the fixture's teardown closes it again
 
 
+def test_remote_routes_are_read_only() -> None:
+    """Structural: nothing in the remote route list can write, whatever a future edit adds."""
+    routes = read_routes(None, "remote")  # type: ignore[arg-type]  # building routes touches no core
+    mounts = [r for r in routes if isinstance(r, Mount)]
+    assert len(mounts) == 1 and mounts[0].path == "/static" and isinstance(mounts[0].app, StaticFiles)
+    for route in routes:
+        if isinstance(route, Mount):
+            continue
+        assert isinstance(route, Route), f"unexpected route type {type(route).__name__}"
+        assert route.methods is not None and route.methods <= {"GET", "HEAD"}, route.path
+    assert not [r for r in routes if getattr(r, "path", "") == "/healthz"]
+
+
 async def test_forwarded_headers_and_any_host_are_fine(remote: httpx.AsyncClient) -> None:
     headers = {**jwt_header(), "cf-connecting-ip": "198.51.100.7", "X-Forwarded-For": "198.51.100.7"}
-    r = await remote.get("/api/games", headers={**headers, "Host": "games.example.com"})
+    r = await remote.get("/api/games", headers={**headers, "Host": "evil.example.net"})
     assert r.status_code == 200
 
 
