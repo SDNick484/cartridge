@@ -17,6 +17,7 @@ import base64
 import binascii
 import logging
 from collections.abc import AsyncIterator, Callable
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from ..config import DeviceConfig
@@ -200,6 +201,7 @@ class ZaparooTarget:
         return None
 
     async def catalog(self) -> AsyncIterator[CatalogEntry]:
+        skipped = usable = 0
         systems = (await self._read("systems", {"all": True})).get("systems") or []
         for system in systems:
             if int(system.get("mediaCount") or 0) <= 0:
@@ -216,17 +218,14 @@ class ZaparooTarget:
                     abs_path = str(row.get("path") or "")
                     rel = self._rel_path(abs_path, relatives.get(row["mediaId"]))
                     if rel is None:
-                        log.warning(
-                            "%s: skipping media %s: no usable relative path (check strip_prefixes)",
-                            self._label,
-                            row["mediaId"],
-                        )
+                        skipped += 1
                         continue
+                    usable += 1
                     # ASSUMPTION Z-SEARCH-FIELDS: the system is `systemId` or `system.id`
                     sys_id = row.get("systemId") or (row.get("system") or {}).get("id") or system["id"]
                     yield CatalogEntry(
                         system_id=str(sys_id),
-                        title=str(row.get("name") or rel),
+                        title=str(row.get("name") or PurePosixPath(rel).stem),
                         rel_path=rel,
                         abs_path=abs_path,
                         ref=TargetRef(str(row["mediaId"]), rel),
@@ -234,6 +233,15 @@ class ZaparooTarget:
                 cursor = (result.get("pagination") or {}).get("nextCursor")
                 if not cursor:
                     break
+        if skipped and not usable:
+            raise TargetError(
+                f"{self._label} reported {skipped} games but none had a usable path; "
+                "check strip_prefixes in devices.yaml (see README)."
+            )
+        if skipped:
+            log.warning(
+                "%s: skipped %d games with no usable relative path (check strip_prefixes)", self._label, skipped
+            )
 
     async def _relative_paths(self, rows: list[dict[str, Any]]) -> dict[Any, str | None]:
         """relativePath per mediaId: from the search row, or media.meta in batches for rows lacking it.
@@ -344,9 +352,9 @@ class ZaparooTarget:
             case "timeout":
                 return LaunchTimeout(f"{label} took too long to launch this; it may still be starting.")
             case "launch_repair":
+                log.debug("%s: launch_repair reason: %r", self.name, exc.reason)  # Core's string may carry paths
                 return LaunchFailed(
-                    f"{label} couldn't start this game ({exc.reason or 'its launcher needs repair'}); "
-                    "check that the core is installed.",
+                    f"{label} couldn't start this game; check that its core is installed.",
                     exc.reason,
                 )
         log.warning("%s: run failed: %s", self.name, exc)

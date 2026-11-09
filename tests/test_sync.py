@@ -281,3 +281,22 @@ async def test_cancelled_run_records_failed_and_reraises(
         assert [(await anext(events))["type"] for _ in range(2)] == ["sync.started", "sync.finished"]
     last = db.last_sync("family-room")
     assert last is not None and last.status == "failed" and last.error and "interrupted" in last.error
+
+
+async def test_sync_where_nothing_has_a_usable_path_fails_and_flips_nothing(
+    sim: Simulation, db: Database, registry: DeviceRegistry
+) -> None:
+    cat, _ = make(db, registry)
+    await cat.sync("family-room")
+    before = media_rows(db, "family-room")
+    fake = family(sim).fake
+    fake.search_relative_path = False
+    for m in fake.media:
+        m["relativePath"] = ""
+    result = await cat.sync("family-room")
+    assert result.status == "failed"
+    assert result.error == (
+        f"Family Room reported {len(fake.media)} games but none had a usable path; "
+        "check strip_prefixes in devices.yaml (see README)."
+    )
+    assert media_rows(db, "family-room") == before and all(p for _, p in before.values())

@@ -194,6 +194,18 @@ async def test_no_response_leaks_a_path_or_host(core: Core, sim: Simulation) -> 
         assert gone.status_code == 410 and gone.json()["code"] == "gone"
         assert office(sim).fake.media  # untouched
 
+        # a launch_repair failure whose Core reason is a path
+        fake.media.append({**metroid, "mediaId": 9001, "name": "Repair Me", "relativePath": "SNES/r.sfc"})
+        fake.reindex()
+        await lan.post("/api/devices/family-room/sync", content=b"{}", headers=W)
+        await wait_for(lambda: not core.catalog.sync_running("family-room"))
+        repair = next(g for g in (await lan.get("/api/games?q=repair")).json()["games"])
+        fake.run_error = "launch_repair"
+        fake.run_reason = f"cannot open {metroid['path']}"
+        body = launch_body("family-room", repair["id"])
+        failed = record("repair", await lan.post("/api/launch", content=body, headers=W))
+        assert failed.status_code == 502 and failed.json()["code"] == "launch_failed"
+
     assert len(needles) > 10 and "/media/" in needles
     assert len(bodies) > 40
     for label in ("lan sse hello", "remote sse hello"):

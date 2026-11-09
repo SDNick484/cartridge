@@ -72,10 +72,10 @@ def _int(p: dict[str, Any], key: str, default: int) -> int:
     return value
 
 
-def _launch_repair() -> RpcError:
+def _launch_repair(reason: str = "launcher_plugin_missing") -> RpcError:
     return RpcError(
         "this launcher's plugin for this system is not installed",
-        data={"category": "launch_repair", "reason": "launcher_plugin_missing"},
+        data={"category": "launch_repair", "reason": reason},
     )
 
 
@@ -96,6 +96,7 @@ class FakeZaparoo:
         self.require_encryption = False  # every request fails with -32002 (ASSUMPTION Z-ENC-ERROR)
         self.run_delay = 0.0
         self.run_error: str | None = None  # a data.category; "launch_repair" adds the reason
+        self.run_reason = "launcher_plugin_missing"  # the reason a "launch_repair" carries
         self.silent = False  # accept frames but never answer (a hung Core)
         self.page_cap: int | None = None  # caps media.search maxResults
         self.search_relative_path = True  # False: search results omit relativePath (media.meta still has it)
@@ -429,14 +430,14 @@ class FakeZaparoo:
         if self.run_delay:
             await asyncio.sleep(self.run_delay)
         if self.run_error == "launch_repair":
-            raise _launch_repair()
+            raise _launch_repair(self.run_reason)
         if self.run_error:
             raise RpcError(f"run failed: {self.run_error}", data={"category": self.run_error})
         media = next((m for m in self.media if m["zapScript"] == text), None)
         if media is None:
             raise RpcError("media not found", data={"category": "media_not_found"})
         if not self.available(media["system"]["id"]):
-            raise _launch_repair()
+            raise _launch_repair(self.run_reason)
         active = self._start_game(media)
         started = {k: active[k] for k in ("systemId", "systemName", "mediaPath", "mediaName")}
         if self.started_after_reply:

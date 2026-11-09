@@ -144,6 +144,42 @@ async def test_catalog_skips_unresolvable_rows(sim: Simulation, make: Make, capl
     assert "no usable relative path" in caplog.text
 
 
+async def test_catalog_with_nothing_usable_raises_one_sentence(
+    sim: Simulation, make: Make, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake = family(sim).fake
+    fake.search_relative_path = False
+    for m in fake.media:
+        m["relativePath"] = ""
+    t = await online(make(family(sim)))
+    with pytest.raises(TargetError) as info:
+        await collect(t)
+    assert str(info.value) == (
+        f"Family Room reported {len(fake.media)} games but none had a usable path; "
+        "check strip_prefixes in devices.yaml (see README)."
+    )
+    assert caplog.text.count("no usable relative path") <= 1
+
+
+async def test_catalog_skips_log_one_summary(sim: Simulation, make: Make, caplog: pytest.LogCaptureFixture) -> None:
+    fake = family(sim).fake
+    fake.search_relative_path = False
+    fake.media[0]["relativePath"] = ""
+    fake.media[1]["relativePath"] = ""
+    t = await online(make(family(sim)))
+    assert len(await collect(t)) == len(fake.media) - 2
+    assert caplog.text.count("no usable relative path") == 1 and "skipped 2" in caplog.text
+
+
+async def test_title_fallback_is_the_file_stem(sim: Simulation, make: Make) -> None:
+    fake = family(sim).fake
+    fake.media[0]["name"] = ""
+    fake.media[0]["relativePath"] = "Sub/Dir/Some Game.sfc"
+    t = await online(make(family(sim)))
+    entry = next(e for e in await collect(t) if e.ref.token == str(fake.media[0]["mediaId"]))
+    assert entry.title == "Some Game"
+
+
 async def test_catalog_error_midway_propagates(sim: Simulation, make: Make) -> None:
     fake = family(sim).fake
     fake.page_cap = 1
@@ -303,6 +339,18 @@ async def test_run_error_categories(sim: Simulation, make: Make, category: str, 
         assert isinstance(info.value, LaunchFailed) and info.value.reason == "launcher_plugin_missing"
 
 
+async def test_launch_repair_message_never_carries_the_raw_reason(sim: Simulation, make: Make) -> None:
+    fake = family(sim).fake
+    fake.run_error = "launch_repair"
+    fake.run_reason = "cannot open /media/fat/games/SNES/a.sfc"
+    t = await online(make(family(sim)))
+    ref = (await collect(t))[0].ref
+    with pytest.raises(LaunchFailed) as info:
+        await t.launch(ref)
+    assert "/media" not in str(info.value) and "a.sfc" not in str(info.value)
+    assert "Family Room" in str(info.value) and "core" in str(info.value)
+
+
 async def test_launch_replace_stops_first(sim: Simulation, make: Make) -> None:
     fake = family(sim).fake
     t = await online(make(family(sim)))
@@ -406,7 +454,7 @@ async def test_strip_prefixes_skips_rows_outside_prefix(
     entries = await collect(t)
     assert str(outside["mediaId"]) not in {e.ref.token for e in entries}
     assert len(entries) == len(fake.media) - 1
-    assert "Family Room" in caplog.text and "skipping media" in caplog.text
+    assert "Family Room" in caplog.text and "skipped 1 games" in caplog.text
     assert "media.meta" not in fake.methods  # rel_path comes from the absolute path, so no lookup
 
 
