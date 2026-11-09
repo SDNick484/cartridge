@@ -217,7 +217,7 @@ class Catalog:
             gid = game_id(e.system_id, e.rel_path)
             if self.db.upsert_game(gid, e.system_id, e.title, stamp):
                 added += 1
-            self.db.upsert_device_media(device, gid, e.ref.token, e.abs_path, stamp)
+            self.db.upsert_device_media(device, gid, e.ref.token, e.abs_path, e.rel_path, stamp)
         return added
 
     # -- history and now playing (spec 7.2) --------------------------------------------------

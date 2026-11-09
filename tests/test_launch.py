@@ -16,6 +16,7 @@ from cartridge.launch import IDEMPOTENCY_TTL, LaunchRequest, LaunchService
 from cartridge.registry import DeviceRegistry
 from cartridge.sim.fake_zaparoo import FakeZaparoo
 from cartridge.sim.harness import Simulation
+from cartridge.targets.base import LaunchFailed, StaleRef
 from tests.conftest import family, office
 
 pytestmark = pytest.mark.anyio
@@ -141,6 +142,7 @@ async def test_rejections_reach_no_device(env: Env, case: tuple[str, LaunchReque
     assert env.calls() == before
     assert launches(env.db) == rows
     assert err.message and "127.0.0.1" not in err.message and "/media/" not in err.message
+    assert "/media/" not in repr(err.extra) and "127.0.0.1" not in repr(err.extra)
     if code == "rate_limited":
         assert err.retry_after is not None and err.retry_after >= 1
         assert "Family Room" in err.message
@@ -320,3 +322,99 @@ async def test_menu_rejections_reach_no_device(env: Env) -> None:
     assert caught.value.code == "busy_launching"
     assert env.registry.actions.get("family-room").tokens == 4
     assert env.calls() == before
+
+
+async def test_launch_with_relative_path_not_a_suffix_of_path(env: Env) -> None:
+    media = next(m for m in env.fake.media if m["name"] == "Sonic the Hedgehog")
+    media["relativePath"] = "Alt/Sonic Renamed.md"
+    await env.catalog.sync("family-room")
+    renamed = game_id("Genesis", "Alt/Sonic Renamed.md")
+    result = await env.svc.launch(req(renamed))
+    assert result["started"] is True
+    assert env.fake.active is not None and env.fake.active["mediaName"] == "Sonic the Hedgehog"
+
+
+async def test_cancelled_launch_is_not_recorded_ok(env: Env) -> None:
+    env.fake.run_delay = 5.0
+    first = asyncio.create_task(env.svc.launch(req()))
+    await wait_for(lambda: "run" in env.fake.methods)
+    second = asyncio.create_task(env.svc.launch(req()))
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    with pytest.raises(ApiError) as caught:
+        await second
+    assert (caught.value.status, caught.value.code) == (504, "timeout")
+    assert launches(env.db) == [("family-room", "interrupted", None)]
+
+
+async def test_unexpected_resync_failure_is_not_recorded_ok(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = env.registry.target("family-room")
+    assert target is not None
+
+    async def stale(*_a: object, **_k: object) -> None:
+        raise StaleRef("stale")
+
+    async def boom(_device: str) -> None:
+        raise RuntimeError("db exploded at /media/x")
+
+    monkeypatch.setattr(target, "launch", stale)
+    monkeypatch.setattr(env.catalog, "sync", boom)
+    with pytest.raises(ApiError) as caught:
+        await env.svc.launch(req())
+    assert (caught.value.status, caught.value.code) == (502, "launch_failed")
+    assert launches(env.db) == [("family-room", "launch_failed", None)]
+
+
+async def test_launch_reason_is_sanitized(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = env.registry.target("family-room")
+    assert target is not None
+
+    async def fail(*_a: object, **_k: object) -> None:
+        raise LaunchFailed("Family Room couldn't start this game.", "cannot open /media/fat/games/x")
+
+    monkeypatch.setattr(target, "launch", fail)
+    with pytest.raises(ApiError) as caught:
+        await env.svc.launch(req())
+    assert caught.value.code == "launch_failed" and caught.value.extra == {"reason": None}
+    assert launches(env.db) == [("family-room", "launch_failed", None)]
+
+
+async def test_request_id_reused_for_a_different_launch(env: Env) -> None:
+    await env.svc.launch(req(SONIC, rid="same"))
+    before, tokens = env.calls(), env.registry.actions.get("family-room").tokens
+    for other in (req(METROID, rid="same", replace=True), req(METROID, "office", rid="same")):
+        with pytest.raises(ApiError) as caught:
+            await env.svc.launch(other)
+        assert (caught.value.status, caught.value.code) == (400, "bad_request")
+    assert env.calls() == before
+    assert env.registry.actions.get("family-room").tokens == tokens
+
+
+async def test_playing_then_resend_with_replace_same_request_id(env: Env) -> None:
+    await play(env)
+    with pytest.raises(ApiError) as caught:
+        await env.svc.launch(req(rid="confirm"))
+    assert caught.value.code == "playing"
+    result = await env.svc.launch(req(rid="confirm", replace=True))
+    assert result["started"] is True
+    assert env.fake.methods.count("run") == 1
+
+
+async def test_second_stale_ref_after_resync_is_gone(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = env.registry.target("family-room")
+    assert target is not None
+    attempts: list[int] = []
+
+    async def stale(*_a: object, **_k: object) -> None:
+        attempts.append(1)
+        raise StaleRef("stale")
+
+    monkeypatch.setattr(target, "launch", stale)
+    runs = sync_runs(env.db)
+    with pytest.raises(ApiError) as caught:
+        await env.svc.launch(req())
+    assert (caught.value.status, caught.value.code) == (410, "gone")
+    assert len(attempts) == 2 and sync_runs(env.db) == runs + 1
+    assert launches(env.db) == [("family-room", "gone", None)]

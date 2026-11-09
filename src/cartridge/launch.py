@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -21,7 +22,7 @@ from cartridge.catalog import Catalog, utcnow
 from cartridge.db import Database, DeviceMedia
 from cartridge.errors import ApiError
 from cartridge.events import EventHub
-from cartridge.ids import game_id, is_game_id, normalize_rel_path
+from cartridge.ids import is_game_id
 from cartridge.ratelimit import refusal
 from cartridge.registry import DeviceRegistry
 from cartridge.targets.base import LaunchError, LaunchFailed, StaleRef, TargetRef
@@ -29,6 +30,7 @@ from cartridge.targets.base import LaunchError, LaunchFailed, StaleRef, TargetRe
 log = logging.getLogger(__name__)
 
 IDEMPOTENCY_TTL = 60.0
+REASON_RE = re.compile(r"^[a-z0-9_]{1,64}$")  # Core's own string must not carry paths or hosts to the UI
 
 
 @dataclass(frozen=True)
@@ -56,7 +58,7 @@ class LaunchService:
         self.hub = hub
         self._clock = clock
         self._now = now
-        self._seen: dict[str, tuple[float, asyncio.Future[dict[str, object]]]] = {}
+        self._seen: dict[str, tuple[float, asyncio.Future[dict[str, object]], str, str]] = {}
 
     # -- checks shared by launch and menu ----------------------------------------------------
 
@@ -102,6 +104,10 @@ class LaunchService:
         hit = self._seen.get(req.request_id)
         if hit is not None:
             self.registry.actions.refund(device)
+            if (hit[2], hit[3]) != (device, req.game):
+                raise ApiError(
+                    400, "bad_request", "This request id was already used for a different launch; tap again."
+                )
             return await asyncio.shield(hit[1])
 
         if self.registry.lock(device).locked():  # 9
@@ -126,9 +132,9 @@ class LaunchService:
 
         # No await since check 8, so no duplicate can have slipped in before this registration.
         future: asyncio.Future[dict[str, object]] = asyncio.get_running_loop().create_future()
-        self._seen[req.request_id] = (self._clock() + IDEMPOTENCY_TTL, future)
+        self._seen[req.request_id] = (self._clock() + IDEMPOTENCY_TTL, future, device, req.game)
         try:
-            result = await self._execute(req, label, title, row.system_id, media)
+            result = await self._execute(req, label, title, media)
         except ApiError as exc:
             future.set_exception(exc)
             future.exception()  # mark retrieved: nobody may be waiting
@@ -144,33 +150,26 @@ class LaunchService:
 
     def _purge(self) -> None:
         now = self._clock()
-        for key in [k for k, (expires, _) in self._seen.items() if expires <= now]:
+        for key in [k for k, (expires, *_) in self._seen.items() if expires <= now]:
             del self._seen[key]
 
-    @staticmethod
-    def _ref(system_id: str, media: DeviceMedia) -> TargetRef | None:
-        """The ref the target issued. rel_path isn't stored, but it is the path suffix whose id matches."""
-        parts = normalize_rel_path(media.abs_path).split("/")
-        for i in range(len(parts)):
-            rel = "/".join(parts[i:])
-            if game_id(system_id, rel) == media.game_id:
-                return TargetRef(media.media_ref, rel)
-        return None
-
-    async def _execute(
-        self, req: LaunchRequest, label: str, title: str, system_id: str, media: DeviceMedia
-    ) -> dict[str, object]:
+    async def _execute(self, req: LaunchRequest, label: str, title: str, media: DeviceMedia) -> dict[str, object]:
         device = req.device
         requested_at = self._now().isoformat(timespec="microseconds")
-        outcome, detail = "ok", None
+        outcome, detail = "interrupted", None  # what a cancellation leaves; "ok" is set only on success
         try:
             async with self.registry.lock(device):
-                await self._call(req, label, title, system_id, media)
+                await self._call(req, label, title, media)
+            outcome = "ok"
         except ApiError as exc:
             outcome = exc.code
             reason = exc.extra.get("reason")
             detail = reason if isinstance(reason, str) else None
             raise
+        except Exception:
+            log.exception("Launching on %s failed unexpectedly.", device)
+            outcome = "launch_failed"
+            raise self._generic(label) from None
         finally:
             try:
                 self.db.record_launch(device, req.game, requested_at, outcome, detail)
@@ -179,17 +178,15 @@ class LaunchService:
         self.hub.publish({"type": "device", "device": device})
         return {"device": device, "game": req.game, "started": True}
 
-    async def _call(self, req: LaunchRequest, label: str, title: str, system_id: str, media: DeviceMedia) -> None:
+    async def _call(self, req: LaunchRequest, label: str, title: str, media: DeviceMedia) -> None:
         device = req.device
         target = self.registry.target(device)
-        assert target is not None  # an online device has a target
+        if target is None:
+            raise self._generic(label)
         gone = ApiError(410, "gone", f"The file for {title} is gone from {label}; sync again.")
         for attempt in (1, 2):
-            ref = self._ref(system_id, media)
             try:
-                if ref is None:
-                    raise StaleRef("no usable ref")
-                await target.launch(ref, replace=req.replace)
+                await target.launch(TargetRef(media.media_ref, media.rel_path), replace=req.replace)
                 return
             except StaleRef:
                 if attempt == 2:
@@ -213,7 +210,11 @@ class LaunchService:
     def _map(exc: LaunchError) -> ApiError:
         extra: dict[str, object] = {}
         if isinstance(exc, LaunchFailed) and exc.reason:
-            extra["reason"] = exc.reason
+            if REASON_RE.fullmatch(exc.reason):
+                extra["reason"] = exc.reason
+            else:
+                extra["reason"] = None
+                log.debug("Dropped a launch reason that isn't a plain token: %r", exc.reason)
         return ApiError(exc.http_status, exc.code, str(exc), extra=extra)
 
     # -- return to menu ----------------------------------------------------------------------

@@ -55,6 +55,7 @@ _MIGRATIONS = [
         game_id TEXT NOT NULL REFERENCES games(id),
         media_ref TEXT NOT NULL,
         abs_path TEXT NOT NULL,
+        rel_path TEXT NOT NULL,
         present INTEGER NOT NULL,
         synced_at TEXT NOT NULL,
         PRIMARY KEY (device, game_id)
@@ -137,6 +138,7 @@ class DeviceMedia:
     game_id: str
     media_ref: str
     abs_path: str
+    rel_path: str  # server-only: what the target needs to rebuild its ref
     present: bool
     synced_at: str
 
@@ -288,12 +290,14 @@ class Database:
         )
         return new
 
-    def upsert_device_media(self, device: str, game_id: str, media_ref: str, abs_path: str, synced_at: str) -> None:
+    def upsert_device_media(
+        self, device: str, game_id: str, media_ref: str, abs_path: str, rel_path: str, synced_at: str
+    ) -> None:
         self._conn.execute(
-            "INSERT INTO device_media(device, game_id, media_ref, abs_path, present, synced_at) "
-            "VALUES (?, ?, ?, ?, 1, ?) ON CONFLICT(device, game_id) DO UPDATE SET media_ref = excluded.media_ref, "
-            "abs_path = excluded.abs_path, present = 1, synced_at = excluded.synced_at",
-            (device, game_id, media_ref, abs_path, synced_at),
+            "INSERT INTO device_media(device, game_id, media_ref, abs_path, rel_path, present, synced_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, ?) ON CONFLICT(device, game_id) DO UPDATE SET media_ref = excluded.media_ref, "
+            "abs_path = excluded.abs_path, rel_path = excluded.rel_path, present = 1, synced_at = excluded.synced_at",
+            (device, game_id, media_ref, abs_path, rel_path, synced_at),
         )
 
     def mark_missing(self, device: str, run_stamp: str) -> int:

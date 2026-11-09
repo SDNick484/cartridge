@@ -20,7 +20,7 @@ def db() -> Database:
 def add(db: Database, gid: str, title: str, system: str = "snes", device: str | None = "family-room") -> None:
     db.upsert_game(gid, system, title, T0)
     if device:
-        db.upsert_device_media(device, gid, f"ref-{gid}", f"/media/{gid}.sfc", T0)
+        db.upsert_device_media(device, gid, f"ref-{gid}", f"/media/{gid}.sfc", f"{gid}.sfc", T0)
 
 
 def titles(db: Database, **kw: object) -> list[str]:
@@ -68,14 +68,14 @@ def test_upsert_game_reports_new_once(db: Database) -> None:
 def test_mark_missing_only_flips_unseen_on_that_device(db: Database) -> None:
     add(db, "g1", "One")
     add(db, "g2", "Two")
-    db.upsert_device_media("office", "g1", "r", "/o/g1", T0)
-    db.upsert_device_media("family-room", "g1", "r2", "/media/g1.sfc", T2)  # seen in the new run
+    db.upsert_device_media("office", "g1", "r", "/o/g1", "g1", T0)
+    db.upsert_device_media("family-room", "g1", "r2", "/media/g1.sfc", "g1.sfc", T2)  # seen in the new run
     assert db.mark_missing("family-room", T2) == 1
     assert db.device_media("family-room", "g1").present is True  # type: ignore[union-attr]
     assert db.device_media("family-room", "g2").present is False  # type: ignore[union-attr]
     assert db.device_media("office", "g1").present is True  # type: ignore[union-attr]
     assert db.mark_missing("family-room", T2) == 0
-    db.upsert_device_media("family-room", "g2", "r3", "/media/g2.sfc", T2)
+    db.upsert_device_media("family-room", "g2", "r3", "/media/g2.sfc", "g2.sfc", T2)
     assert db.device_media("family-room", "g2").present is True  # type: ignore[union-attr]
     assert db.game_id_for_path("family-room", "/media/g2.sfc") == "g2"
     assert db.game_id_for_path("family-room", "/nope") is None
@@ -86,7 +86,7 @@ def test_query_hides_games_present_nowhere_unless_asked(db: Database) -> None:
     add(db, "g1", "Here")
     add(db, "g2", "Gone")
     db.mark_missing("family-room", T1)
-    db.upsert_device_media("family-room", "g1", "r", "/p", T2)
+    db.upsert_device_media("family-room", "g1", "r", "/p", "p", T2)
     assert titles(db) == ["Here"]
     assert titles(db, include_unavailable=True) == ["Gone", "Here"]
     assert [s.id for s in db.systems_with_games()] == ["snes"]
@@ -165,7 +165,7 @@ def test_transaction_rolls_back(db: Database) -> None:
 
 def test_presence_and_device_systems(db: Database) -> None:
     add(db, "g1", "Alpha")
-    db.upsert_device_media("office", "g1", "r", "/o", T0)
+    db.upsert_device_media("office", "g1", "r", "/o", "o", T0)
     db.set_device_system("family-room", "snes", True, 10, T0)
     db.set_device_system("office", "snes", True, 3, T0)
     db.set_device_system("office", "snes", False, 0, T1)  # upsert
