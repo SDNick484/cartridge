@@ -1,7 +1,8 @@
 # Cartridge: design
 
 Status: approved in brainstorming on 2026-11-07; §8 (artwork) amended 2026-11-08. This is
-the source of truth for the implementation plan. A decision here changes only by editing this file in a reviewed PR.
+the source of truth for the implementation plan. A decision here changes only by editing
+this file in a reviewed PR.
 
 Cartridge is a self-hosted web app. It shows a game library as a box-art grid that you can
 filter by system and search. Picking a game launches it on a device you choose explicitly.
