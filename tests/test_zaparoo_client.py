@@ -1,7 +1,9 @@
 import asyncio
+import socket
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+import aiohttp
 import pytest
 
 from cartridge import zaparoo_client as zc
@@ -12,6 +14,7 @@ from cartridge.zaparoo_client import (
     ZaparooError,
     ZaparooTimeout,
     ZaparooUnavailable,
+    describe_failure,
 )
 
 from .conftest import family
@@ -139,3 +142,76 @@ async def test_encryption_means_needs_pairing_then_recovers(sim: Simulation, cli
     assert not client.needs_pairing
     assert client.error is None
     assert states == [False, True]
+
+
+async def test_encryption_retries_back_off(
+    sim: Simulation, client: ZaparooClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(zc, "BACKOFF_MAX", 0.4)
+    fake = family(sim).fake
+    fake.require_encryption = True
+    await client.start()
+    await asyncio.sleep(0.8)
+    # delays 0.05, 0.1, 0.2, 0.4, ... allow about 5 attempts; a flat 0.05 would make about 16
+    assert 2 <= fake.methods.count("version") <= 7
+
+
+async def test_silent_link_is_dropped_and_reconnected(
+    sim: Simulation, client: ZaparooClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(zc, "PING_EVERY", 0.05)
+    monkeypatch.setattr(zc, "SILENCE_LIMIT", 0.15)
+    seen: list[tuple[bool, str | None]] = []
+    client.add_state_listener(lambda up: seen.append((up, client.error)))
+    await client.start()
+    await until(lambda: len(seen) == 1)
+    ws = client._ws
+    assert ws is not None
+    real_send = ws.send_str
+
+    async def lose_pings(data: str, *args: Any, **kwargs: Any) -> None:
+        if data != "ping":  # a powered-off MiSTer answers nothing
+            await real_send(data, *args, **kwargs)
+
+    monkeypatch.setattr(ws, "send_str", lose_pings)
+    await until(lambda: len(seen) == 3)
+    assert seen[1][0] is False and seen[1][1] is not None and "stopped answering" in seen[1][1]
+    assert seen[2][0] is True and client.connected
+
+
+async def test_pongs_keep_an_idle_link_alive(client: ZaparooClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(zc, "PING_EVERY", 0.05)
+    monkeypatch.setattr(zc, "SILENCE_LIMIT", 0.15)
+    states: list[bool] = []
+    client.add_state_listener(states.append)
+    await client.start()
+    await until(lambda: states == [True])
+    await asyncio.sleep(0.5)
+    assert states == [True] and client.connected
+
+
+async def test_prime_respects_the_allow_list(sim: Simulation) -> None:
+    c = ZaparooClient(
+        "Family Room", "127.0.0.1", family(sim).fake.port, allowed_methods=frozenset({"systems"}), setup_hint="x"
+    )
+    await c.start()
+    await c.tried.wait()
+    try:
+        assert c.connected and c.version is None
+        assert "version" not in family(sim).fake.methods
+    finally:
+        await c.stop()
+
+
+def test_failure_sentences_hide_the_host() -> None:
+    host = "secret-box.example.com"
+    dns = aiohttp.ClientConnectorError(
+        aiohttp.client_reqrep.ConnectionKey(host, 8770, False, None, None, None, None),
+        socket.gaierror(-2, f"Name or service not known {host}"),
+    )
+    assert (
+        describe_failure(dns, "Family Room", 8770, "hint") == "No answer from Family Room: is it on and on the network?"
+    )
+    other = RuntimeError(f"boom talking to {host}:8770")
+    text = describe_failure(other, "Family Room", 8770, "hint")
+    assert host not in text and "Family Room" in text

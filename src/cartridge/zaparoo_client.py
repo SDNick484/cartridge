@@ -8,7 +8,8 @@ allow-list in one place and lets the tests run the real client against a fake Co
 
 How it works:
 - ``start()`` launches a background task that connects and reconnects with backoff (``BACKOFF_START``
-  doubling to ``BACKOFF_MAX``). The first attempt sets ``tried``, so callers can wait for it briefly.
+  doubling to ``BACKOFF_MAX``; it resets only once a connection is usable, so a Core that accepts the socket
+  and then refuses or closes is not hammered). The first attempt sets ``tried``, so callers can wait for it briefly.
 - Requests carry a uuid4 ``id``; responses are matched back to their futures. Several requests can be
   in flight on one socket.
 - Notifications (no ``id``) are passed to listeners. State listeners hear ``True`` once a connection is
@@ -34,6 +35,7 @@ import contextlib
 import errno
 import json
 import logging
+import socket
 import time
 import uuid
 from collections.abc import Callable
@@ -103,7 +105,7 @@ class EncryptionRequired(ZaparooError):
     """Core has encryption on and we haven't paired with it."""
 
 
-def describe_failure(exc: BaseException, label: str, host: str, port: int, setup_hint: str) -> str:
+def describe_failure(exc: BaseException, label: str, port: int, setup_hint: str) -> str:
     """One sentence saying why we couldn't reach Zaparoo, and what to check."""
     os_error = exc.os_error if isinstance(exc, aiohttp.ClientConnectorError) else exc
     if isinstance(os_error, OSError) and os_error.errno == errno.ECONNREFUSED:
@@ -113,11 +115,16 @@ def describe_failure(exc: BaseException, label: str, host: str, port: int, setup
         )
     if isinstance(exc, aiohttp.WSServerHandshakeError):
         return f"{label} answered on port {port}, but not as Zaparoo's API ({exc.status}): is this Zaparoo Core?"
-    if isinstance(exc, TimeoutError | aiohttp.ServerTimeoutError) or (
-        isinstance(os_error, OSError) and os_error.errno in (errno.EHOSTUNREACH, errno.ENETUNREACH, errno.ETIMEDOUT)
+    if (
+        isinstance(exc, TimeoutError | aiohttp.ServerTimeoutError | socket.gaierror)
+        or isinstance(os_error, socket.gaierror)
+        or (
+            isinstance(os_error, OSError) and os_error.errno in (errno.EHOSTUNREACH, errno.ENETUNREACH, errno.ETIMEDOUT)
+        )
     ):
         return f"No answer from {label}: is it on and on the network?"
-    return f"Can't reach Zaparoo on {label} ({host}): {exc.__class__.__name__}: {exc}"
+    # No host and no str(exc) here: aiohttp embeds host:port in it, and this sentence reaches the UI.
+    return f"Can't reach Zaparoo on {label} ({exc.__class__.__name__}); the server log has details."
 
 
 class ZaparooClient:
@@ -150,6 +157,7 @@ class ZaparooClient:
         self._task: asyncio.Task[None] | None = None
         self._last_heard = 0.0
         self._pairing_announced = False
+        self._backoff = BACKOFF_START
 
     # --- lifecycle ---------------------------------------------------------------------------
     async def start(self) -> None:
@@ -176,22 +184,21 @@ class ZaparooClient:
                 log.exception("%s: state listener failed", self.label)
 
     async def _run(self) -> None:
-        backoff = BACKOFF_START
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=CONNECT_TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             while True:
                 try:
                     # ASSUMPTION Z-LEGACY: no credentials; Core treats an unauthenticated LAN client as legacy.
                     async with session.ws_connect(self.url, timeout=aiohttp.ClientWSTimeout(ws_close=5)) as ws:
-                        backoff = BACKOFF_START
                         await self._serve(ws)
                     if self.error is None:
                         self.error = f"Zaparoo on {self.label} closed the connection; reconnecting"
                 except asyncio.CancelledError:
                     raise
                 except (aiohttp.ClientError, OSError, TimeoutError) as exc:
-                    self.error = describe_failure(exc, self.label, self.host, self.port, self.setup_hint)
+                    self.error = describe_failure(exc, self.label, self.port, self.setup_hint)
                     log.info("%s: %s", self.label, self.error)
+                    log.debug("%s: connect failed: %r", self.label, exc)
                 finally:
                     was_up, self.connected = self.connected, False
                     self._ws = None
@@ -199,8 +206,8 @@ class ZaparooClient:
                         self._state(False)
                     self._fail_pending(ZaparooUnavailable(self.error or f"Zaparoo on {self.label} disconnected"))
                 self.tried.set()
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, BACKOFF_MAX)
+                await asyncio.sleep(self._backoff)
+                self._backoff = min(self._backoff * 2, BACKOFF_MAX)
 
     async def _serve(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         self._ws = ws
@@ -222,8 +229,9 @@ class ZaparooClient:
     async def _prime(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         """Read the version once per connection; the connection counts as usable once that's done."""
         try:
-            info = await self._request("version")
-            self.version = str(info.get("version")) if isinstance(info, dict) else None
+            if "version" in self.allowed_methods:
+                info = await self._request("version")
+                self.version = str(info.get("version")) if isinstance(info, dict) else None
         except EncryptionRequired:
             self.needs_pairing = True
             self.error = "needs pairing (Zaparoo encryption is on)"
@@ -239,6 +247,7 @@ class ZaparooClient:
         self.needs_pairing = False
         self._pairing_announced = False
         self.error = None
+        self._backoff = BACKOFF_START  # only a usable connection resets the backoff
         self.connected = True
         self.tried.set()
         self._state(True)
@@ -306,17 +315,22 @@ class ZaparooClient:
 
     async def call(self, method: str, params: dict[str, Any] | None = None, timeout: float = DEFAULT_TIMEOUT) -> Any:
         """Send one request and return its ``result``. Raises ZaparooError for an error reply."""
-        if method not in self.allowed_methods:
-            raise ValueError(f"{method!r} is not a Zaparoo method Cartridge sends")  # a bug, not user input
-        if params is not None and "unsafe" in params:
-            raise ValueError("the 'unsafe' parameter is never sent to Zaparoo")
+        self._check(method, params)
         if not self.connected:
             raise ZaparooUnavailable(self.error or f"Zaparoo on {self.label} isn't connected yet")
         return await self._request(method, params, timeout)
 
+    def _check(self, method: str, params: dict[str, Any] | None) -> None:
+        # Run by every request, the version prime included, so nothing reaches the socket without it.
+        if method not in self.allowed_methods:
+            raise ValueError(f"{method!r} is not a Zaparoo method Cartridge sends")  # a bug, not user input
+        if params is not None and "unsafe" in params:
+            raise ValueError("the 'unsafe' parameter is never sent to Zaparoo")
+
     async def _request(
         self, method: str, params: dict[str, Any] | None = None, timeout: float = DEFAULT_TIMEOUT
     ) -> Any:
+        self._check(method, params)
         ws = self._ws
         if ws is None:
             raise ZaparooUnavailable(self.error or f"Zaparoo on {self.label} isn't connected yet")
