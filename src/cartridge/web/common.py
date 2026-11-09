@@ -47,7 +47,9 @@ DEFAULT_LIMIT = 120
 MAX_LIMIT = 500
 ART_FOUND_CACHE = "public, max-age=604800"
 ART_PLACEHOLDER_CACHE = "public, max-age=3600"  # a recorded miss expires sooner so later-found art shows up
-ART_TRANSIENT_CACHE = "no-cache"  # the sources couldn't tell: revalidate (the ETag makes it cheap) until they can
+# The sources couldn't tell, so nothing was recorded: the browser may keep the tile but asks again every time,
+# and each ask retries the sources. The ETag only spares the body when they still can't tell.
+ART_TRANSIENT_CACHE = "no-cache"
 
 # -- errors and headers ---------------------------------------------------------------------------
 

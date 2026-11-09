@@ -130,7 +130,7 @@ class ArtResult:
     content_type: str
     etag: str
     found: bool
-    transient: bool = False  # a placeholder because a source couldn't tell, with no miss recorded: don't cache it
+    transient: bool = False  # a placeholder because a source couldn't tell, with no miss recorded: revalidate it
 
 
 def _result(body: bytes, content_type: str, found: bool, transient: bool = False) -> ArtResult:
