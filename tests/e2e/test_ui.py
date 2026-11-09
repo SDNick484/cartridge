@@ -228,6 +228,22 @@ def test_misconfigured_device_is_never_offered(misconfigured_server: str, open_p
     no_console_problems(page)
 
 
+def test_never_synced_shows_the_misconfiguration_not_sync(misconfigured_server: str, open_page: OpenPage) -> None:
+    page = open_page(misconfigured_server)
+    expect(tiles(page).first).to_be_visible()
+    # Stand in for a catalog that has never synced: no games yet and /api/config saying so.
+    config = page.request.get(f"{misconfigured_server}/api/config").json()
+    page.route("**/api/config", lambda r: r.fulfill(json={**config, "synced": False}))
+    page.route(re.compile(r".*/api/games\?.*"), lambda r: r.fulfill(json={"games": [], "total": 0}))
+    page.reload()
+    empty = page.locator("#empty")
+    expect(empty).to_contain_text("Nothing has been indexed yet")
+    expect(empty.get_by_role("button", name="Sync Office")).to_have_count(1)
+    expect(empty.get_by_role("button", name="Sync Cabinet")).to_have_count(0)
+    expect(empty).to_contain_text("Cabinet: platform batocera isn't supported in v1; use mister.")
+    no_console_problems(page)
+
+
 def test_recent_shows_the_device_and_refreshes_live(fresh_server: str, open_page: OpenPage) -> None:
     page = open_page(fresh_server)
     expect(tiles(page).first).to_be_visible()
