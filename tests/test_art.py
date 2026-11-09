@@ -1,3 +1,4 @@
+import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,7 @@ from cartridge.ids import game_id
 from cartridge.registry import DeviceRegistry
 from cartridge.sim.fake_zaparoo import tiny_png
 from cartridge.sim.harness import Simulation
+from cartridge.targets.base import DeviceStatus
 
 pytestmark = pytest.mark.anyio
 
@@ -232,14 +234,125 @@ async def test_server_error_records_no_miss(art: ArtCache, net: Net, db: Databas
         httpx.Response(200, content=b"x" * (5 * 1024 * 1024 + 1), headers={"content-type": "image/png"}),
         httpx.Response(302, headers={"location": "https://example.com/a.png"}),
     ],
+    ids=["html", "too-big", "redirect"],
 )
-async def test_unusable_response_is_not_stored(art: ArtCache, net: Net, db: Database, response: httpx.Response) -> None:
+async def test_unusable_response_is_a_miss(art: ArtCache, net: Net, db: Database, response: httpx.Response) -> None:
     net.respond = lambda r: response
     got = await art.get(DKC)
     assert got is not None and not got.found
     row = db.art(DKC)
-    assert row is None or row.status == "none"
+    assert row is not None and row.status == "none" and row.file is None
     assert len(net.requests) == 1
+
+
+async def test_oversized_stream_is_cut_off_at_the_cap(art: ArtCache, net: Net, db: Database) -> None:
+    chunk = b"x" * (1024 * 1024)
+    read: list[int] = []
+
+    async def body():  # type: ignore[no-untyped-def]
+        for i in range(100):  # no Content-Length: only the byte count can stop it
+            read.append(i)
+            yield chunk
+
+    net.respond = lambda r: httpx.Response(200, content=body(), headers={"content-type": "image/png"})
+    got = await art.get(DKC)
+    assert got is not None and not got.found
+    row = db.art(DKC)
+    assert row is not None and row.status == "none"
+    assert len(read) <= 7  # 5 MB cap, 1 MB chunks
+
+
+async def test_declared_oversize_is_refused_without_reading(art: ArtCache, net: Net) -> None:
+    read: list[int] = []
+
+    async def body():  # type: ignore[no-untyped-def]
+        read.append(1)
+        yield b"x"
+
+    net.respond = lambda r: httpx.Response(
+        200, content=body(), headers={"content-type": "image/png", "content-length": str(6 * 1024 * 1024)}
+    )
+    got = await art.get(DKC)
+    assert got is not None and not got.found
+    assert read == []
+
+
+async def test_requests_ask_for_identity_encoding(art: ArtCache, net: Net) -> None:
+    await art.get(DKC)
+    assert net.requests[0].headers["accept-encoding"] == "identity"
+
+
+@pytest.mark.parametrize("failure", ["network", "5xx"])
+async def test_transient_failure_pauses_libretro(
+    art: ArtCache, net: Net, db: Database, clock: Clock, failure: str
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if failure == "network":
+            raise httpx.ConnectError("down")
+        return httpx.Response(503)
+
+    net.respond = respond
+    await art.get(DKC)
+    await art.get(FACADE)
+    assert len(net.requests) == 1
+    assert db.art(DKC) is None
+    clock.advance(61)
+    await art.get(FACADE)
+    assert len(net.requests) == 2
+
+
+async def test_queued_requests_do_not_fire_after_a_429(art: ArtCache, net: Net) -> None:
+    import asyncio
+
+    net.respond = lambda r: httpx.Response(429, headers={"retry-after": "120"})
+    await asyncio.gather(art.get(DKC), art.get(FACADE), art.get(GUNSTAR))
+    assert len(net.requests) == 1
+
+
+async def test_acquire_timeout_is_unknown_not_a_miss(art: ArtCache, net: Net, db: Database) -> None:
+    art._bucket.tokens = 0.0
+    art._bucket.rate = 0.01  # a token is 100 s away, beyond the acquire timeout
+    got = await art.get(DKC)
+    assert got is not None and not got.found
+    assert net.requests == [] and db.art(DKC) is None
+
+
+async def test_storage_failure_serves_art_and_leaks_no_path(
+    art: ArtCache, net: Net, db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    net.respond = png_response
+
+    def fail(self: Path, data: bytes) -> int:
+        raise OSError(13, f"Permission denied: '{self}'")
+
+    monkeypatch.setattr(Path, "write_bytes", fail)
+    with caplog.at_level(logging.DEBUG):
+        got = await art.get(DKC)
+    assert got is not None and got.found and got.body == tiny_png()
+    assert db.art(DKC) is None
+    assert str(art.art_dir) not in caplog.text
+    assert "Could not cache art" in caplog.text
+
+
+async def test_prefetch_error_log_has_no_exception_text(
+    art: ArtCache, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def boom(game_id: str) -> None:
+        raise OSError(f"cannot write {art.art_dir}/x")
+
+    monkeypatch.setattr(art, "get", boom)
+    await art.prefetch([DKC])
+    assert "OSError" in caplog.text and str(art.art_dir) not in caplog.text
+
+
+async def test_offline_holder_means_unknown_not_a_miss(
+    art: ArtCache, net: Net, db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(art.registry, "status", lambda name: DeviceStatus("offline", "offline", None, None))
+    got = await art.get(DKC)
+    assert got is not None and not got.found
+    assert len(net.requests) == 1  # libretro answered 404
+    assert db.art(DKC) is None
 
 
 async def test_content_type_sets_extension(art: ArtCache, net: Net, db: Database) -> None:
@@ -298,17 +411,6 @@ async def test_prefetch_skips_cached_and_swallows_errors(art: ArtCache, net: Net
     await art.prefetch([DKC, FACADE, "nonexistent00000"])
     assert len(net.requests) == 2
     assert db.art(FACADE) is not None
-
-
-async def test_prefetch_logs_errors(
-    art: ArtCache, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    async def boom(game_id: str) -> None:
-        raise RuntimeError("kaput")
-
-    monkeypatch.setattr(art, "get", boom)
-    await art.prefetch([DKC])
-    assert "kaput" in caplog.text
 
 
 def test_placeholder_escapes_title() -> None:

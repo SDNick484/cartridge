@@ -10,6 +10,7 @@ game id runs at a time; libretro gets one request per second and is paused after
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import os
@@ -41,6 +42,8 @@ MISS_DAYS = 7
 DEFAULT_PAUSE = 60.0
 PREFETCH_CONCURRENCY = 2
 REQUEST_TIMEOUT = 10.0
+TOTAL_TIMEOUT = 15.0
+ACQUIRE_TIMEOUT = 5.0
 
 EXTENSIONS = {"image/webp": "webp", "image/png": "png", "image/jpeg": "jpg"}
 
@@ -196,7 +199,7 @@ class ArtCache:
                     if self._needs_fetch(game_id):
                         await self.get(game_id)
                 except Exception as exc:
-                    log.warning("Art prefetch failed for %s: %s", game_id, exc)
+                    log.warning("Art prefetch failed for %s: %s", game_id, type(exc).__name__)
 
         await asyncio.gather(*(one(g) for g in game_ids))
 
@@ -246,24 +249,36 @@ class ArtCache:
     def _store(self, game_id: str, art: _Art, source: str) -> ArtResult:
         rel = f"{game_id[:2]}/{game_id}.{EXTENSIONS[art.content_type]}"
         path = self.art_dir / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".{path.name}.tmp")
-        tmp.write_bytes(art.data)
-        tmp.replace(path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_bytes(art.data)
+            tmp.replace(path)
+        except OSError as exc:  # serve it uncached; the message would carry a server path, so don't log it
+            log.warning("Could not cache art for %s: %s", game_id, type(exc).__name__)
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            return _result(art.data, art.content_type, True)
         self.db.set_art(game_id, source, rel, art.content_type, "found", self._stamp(), None)
         return _result(art.data, art.content_type, True)
 
     async def _from_device(self, game_id: str, system_id: str) -> _Outcome:
         asked = False
+        unreachable = False  # a device that has it but is offline might hold art
         for name in self.registry.names():
             target = self.registry.target(name)
             media = self.db.device_media(name, game_id)
-            if target is None or media is None or not media.present or not self.registry.status(name).online:
+            if target is None or media is None or not media.present:
+                continue
+            if not self.registry.status(name).online:
+                unreachable = True
                 continue
             asked = True
             image = await target.artwork(TargetRef(media.media_ref, media.rel_path), MAX_SIZE)
             if image is not None and image.content_type in EXTENSIONS and 0 < len(image.data) <= MAX_BYTES:
                 return _Art(image.data, image.content_type)
+        if unreachable:
+            return "unknown"
         return "none" if asked else None
 
     async def _from_libretro(self, game_id: str, system_id: str) -> _Outcome:
@@ -275,25 +290,49 @@ class ArtCache:
             return None
         if self._clock() < self._paused_until:
             return "unknown"
-        await self._bucket.acquire()
         try:
-            resp = await self._http.get(
-                url, headers={"User-Agent": self._ua}, follow_redirects=False, timeout=REQUEST_TIMEOUT
-            )
-        except httpx.HTTPError as exc:
+            await self._bucket.acquire(timeout=ACQUIRE_TIMEOUT)
+        except TimeoutError:
+            return "unknown"  # too many waiting; the next request tries again
+        if self._clock() < self._paused_until:  # a 429 or an outage landed while this one queued
+            return "unknown"
+        headers = {"User-Agent": self._ua, "Accept-Encoding": "identity"}
+        try:
+            # Whole-request cap: httpx's timeout is per read, so a slow trickle would otherwise never end.
+            with anyio.fail_after(TOTAL_TIMEOUT):
+                async with self._http.stream(
+                    "GET", url, headers=headers, follow_redirects=False, timeout=REQUEST_TIMEOUT
+                ) as resp:
+                    return await self._read(resp)
+        except (httpx.HTTPError, TimeoutError) as exc:
             log.warning("libretro request failed: %s", type(exc).__name__)
+            self._pause(DEFAULT_PAUSE)
             return "unknown"
-        if resp.status_code == 404:
-            return "none"
-        if resp.status_code == 429:
-            self._paused_until = self._clock() + _retry_after(resp)
+
+    def _pause(self, seconds: float) -> None:
+        self._paused_until = max(self._paused_until, self._clock() + seconds)
+
+    async def _read(self, resp: httpx.Response) -> _Outcome:
+        status = resp.status_code
+        if status == 429:
+            self._pause(_retry_after(resp))
             return "unknown"
-        if resp.status_code != 200:
+        if status >= 500:
+            self._pause(DEFAULT_PAUSE)
             return "unknown"
-        content_type = resp.headers.get("content-type", "").split(";")[0].strip().lower()
-        if content_type not in EXTENSIONS or not 0 < len(resp.content) <= MAX_BYTES:
-            return "none"
-        return _Art(resp.content, content_type)
+        if status == 200:
+            content_type = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+            declared = resp.headers.get("content-length", "")
+            if content_type not in EXTENSIONS or (declared.isdigit() and int(declared) > MAX_BYTES):
+                return "none"
+            body = bytearray()
+            async for chunk in resp.aiter_bytes():
+                body += chunk
+                if len(body) > MAX_BYTES:
+                    return "none"
+            return _Art(bytes(body), content_type) if body else "none"
+        # 404, and 3xx (redirects are never followed) are definitive; any other status is a shrug.
+        return "none" if status == 404 or 300 <= status < 400 else "unknown"
 
     def _any_rel_path(self, game_id: str) -> str | None:
         rows = [m for n in self.registry.names() if (m := self.db.device_media(n, game_id)) is not None]
