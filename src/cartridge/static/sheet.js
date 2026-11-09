@@ -57,8 +57,15 @@ function blocker(game) {
   }
   const entry = game.devices[device.name];
   if (!entry) return `${game.title} isn't on ${device.label}.`;
-  if (!entry.available) return `${device.label} doesn't have the core for ${game.system_name}.`;
-  return null;
+  if (entry.available) return null;
+  switch (entry.reason) {
+    case "not_on_device":
+      return `${game.title} isn't on ${device.label}.`;
+    case "core_missing":
+      return `${device.label} doesn't have the core for ${game.system_name}.`;
+    default:
+      return `${game.title} isn't available on ${device.label}.`;
+  }
 }
 
 function render() {

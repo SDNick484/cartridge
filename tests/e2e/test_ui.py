@@ -200,3 +200,14 @@ def test_sync_now_keeps_focus_in_device_sheet(fresh_server: str, open_page: Open
     assert page.evaluate("document.activeElement.tagName") == "BUTTON"
     expect(sync).to_be_focused()
     no_console_problems(page)
+
+
+def test_sheet_reason_for_a_game_not_on_the_device(server: str, open_page: OpenPage) -> None:
+    page = open_page(server)
+    pick_device(page, "Office")
+    page.get_by_label("Only games for Office").uncheck()
+    open_game(page, "Family Only Quest")
+    reason = page.locator("#play-reason")
+    expect(reason).to_have_text("Family Only Quest isn't on Office.")
+    expect(reason).not_to_contain_text("core")
+    no_console_problems(page)
