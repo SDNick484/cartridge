@@ -21,7 +21,8 @@ _MIGRATIONS = [
     """
     CREATE TABLE systems (id TEXT PRIMARY KEY, name TEXT NOT NULL, manufacturer TEXT, release_date TEXT);
     CREATE TABLE games (
-        id TEXT PRIMARY KEY,
+        seq INTEGER PRIMARY KEY,
+        id TEXT UNIQUE NOT NULL,
         system_id TEXT NOT NULL REFERENCES systems(id),
         title TEXT NOT NULL,
         sort_title TEXT NOT NULL,
@@ -30,17 +31,17 @@ _MIGRATIONS = [
     );
     CREATE INDEX games_sort ON games(sort_title, id);
     CREATE VIRTUAL TABLE games_fts USING fts5(
-        title, content='games', content_rowid='rowid', tokenize="unicode61 remove_diacritics 2"
+        title, content='games', content_rowid='seq', tokenize="unicode61 remove_diacritics 2"
     );
     CREATE TRIGGER games_ai AFTER INSERT ON games BEGIN
-        INSERT INTO games_fts(rowid, title) VALUES (new.rowid, new.title);
+        INSERT INTO games_fts(rowid, title) VALUES (new.seq, new.title);
     END;
     CREATE TRIGGER games_ad AFTER DELETE ON games BEGIN
-        INSERT INTO games_fts(games_fts, rowid, title) VALUES ('delete', old.rowid, old.title);
+        INSERT INTO games_fts(games_fts, rowid, title) VALUES ('delete', old.seq, old.title);
     END;
     CREATE TRIGGER games_au AFTER UPDATE OF title ON games BEGIN
-        INSERT INTO games_fts(games_fts, rowid, title) VALUES ('delete', old.rowid, old.title);
-        INSERT INTO games_fts(rowid, title) VALUES (new.rowid, new.title);
+        INSERT INTO games_fts(games_fts, rowid, title) VALUES ('delete', old.seq, old.title);
+        INSERT INTO games_fts(rowid, title) VALUES (new.seq, new.title);
     END;
     CREATE TABLE device_systems (
         device TEXT NOT NULL,
@@ -389,7 +390,7 @@ class Database:
             params.append(system)
         match = fts_query(q) if q is not None else None
         if match is not None:
-            where.append("g.rowid IN (SELECT rowid FROM games_fts WHERE games_fts MATCH ?)")
+            where.append("g.seq IN (SELECT rowid FROM games_fts WHERE games_fts MATCH ?)")
             params.append(match)
         if present_on is not None:
             where.append(

@@ -257,3 +257,21 @@ def test_art_roundtrip(db: Database) -> None:
         "found",
         None,
     )
+
+
+def test_search_survives_vacuum(db: Database) -> None:
+    for gid, title in (("g1", "Alpha Quest"), ("g2", "Beta Quest"), ("g3", "Gamma Quest"), ("g4", "Delta Quest")):
+        add(db, gid, title)
+    db._conn.execute("DELETE FROM device_media WHERE game_id = 'g1'")
+    db._conn.execute("DELETE FROM games WHERE id = 'g1'")  # leaves a gap that VACUUM closes on a TEXT-keyed table
+    db._conn.commit()
+    db._conn.execute("VACUUM")
+    for q, want in (("gamma", "Gamma Quest"), ("delta", "Delta Quest"), ("beta", "Beta Quest")):
+        assert titles(db, q=q) == [want], q
+    assert titles(db, q="alpha") == []
+
+
+def test_games_rowid_is_an_integer_key(db: Database) -> None:
+    pk = [r["name"] for r in db._conn.execute("PRAGMA table_info(games)") if r["pk"]]
+    assert pk == ["seq"]  # FTS rows must follow a key VACUUM can't renumber
+    assert any(r["unique"] for r in db._conn.execute("PRAGMA index_list(games)"))
