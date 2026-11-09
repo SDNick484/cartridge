@@ -110,7 +110,12 @@
       "startedAt": "2026-11-06T12:00:00+00:00",
       "endedAt": "2026-11-06T12:20:00+00:00",
       "playTime": 1200,
-      "mediaId": 106
+      "mediaId": 106,
+      "launcherId": "NES",
+      "zapScript": "NES/Contra (USA).nes",
+      "hasCover": false,
+      "sessionSource": "active_media",
+      "sessionConfidence": "exact"
     }
   ]
 }

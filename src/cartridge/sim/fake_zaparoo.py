@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import copy
 import json
+import logging
 import struct
 import zlib
 from datetime import UTC, datetime
@@ -21,6 +23,8 @@ from importlib import resources
 from typing import Any
 
 from aiohttp import WSMsgType, web
+
+log = logging.getLogger(__name__)
 
 FIXTURE_MEDIA_ROOT = "/media/fat/games"
 MAX_HISTORY = 100
@@ -59,6 +63,15 @@ class RpcError(Exception):
         self.data = data
 
 
+def _int(p: dict[str, Any], key: str, default: int) -> int:
+    value = p.get(key)
+    if value is None or value == 0:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RpcError(f"invalid {key}", code=-32602)
+    return value
+
+
 def _launch_repair() -> RpcError:
     return RpcError(
         "this launcher's plugin for this system is not installed",
@@ -87,6 +100,7 @@ class FakeZaparoo:
         self.page_cap: int | None = None  # caps media.search maxResults
         self.search_relative_path = True  # False: search results omit relativePath (media.meta still has it)
         self.close_after: str | None = None  # close the socket on receiving this method, unanswered
+        self.started_after_reply = False  # True: run replies first, then media.started (order isn't guaranteed)
         self._refuse = False
         self._listening = False
         self._transports: dict[web.WebSocketResponse, Any] = {}
@@ -188,10 +202,17 @@ class FakeZaparoo:
             self.history.insert(
                 0,
                 {
-                    **{k: stopped[k] for k in ("mediaId", "systemId", "systemName", "mediaName", "mediaPath")},
+                    **{
+                        k: stopped[k]
+                        for k in ("mediaId", "systemId", "systemName", "mediaName", "mediaPath", "launcherId")
+                    },
+                    "zapScript": stopped.get("zapScript", ""),
+                    "hasCover": False,
                     "startedAt": stopped["started"],
                     "endedAt": ended.isoformat(timespec="seconds"),
                     "playTime": max(0, int((ended - started).total_seconds())),
+                    "sessionSource": "active_media",
+                    "sessionConfidence": "exact",
                 },
             )
         return stopped
@@ -248,30 +269,46 @@ class FakeZaparoo:
         try:
             req = json.loads(text)
         except ValueError:
-            await ws.send_str(json.dumps({"jsonrpc": "2.0", "error": {"code": -32700, "message": "parse error"}}))
+            await self._send(ws, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
+            return
+        if not isinstance(req, dict):
+            await self._send(
+                ws, {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
+            )
             return
         method, params, req_id = req.get("method"), req.get("params"), req.get("id")
-        self.received.append((method, params))
+        self.received.append((str(method), params))
         if self.silent:
             return
         if method == self.close_after:
             await ws.close()
             return
+        after: list[tuple[str, dict[str, Any]]] = []  # notifications to send once the reply is out
         try:
             if self.require_encryption:
                 raise RpcError("encryption required", code=-32002)
-            result = await self._call(str(method), params if isinstance(params, dict) else {})
+            result = await self._call(str(method), params if isinstance(params, dict) else {}, after)
             reply: dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "result": result}
         except RpcError as exc:
             err: dict[str, Any] = {"code": exc.code, "message": str(exc)}
             if exc.data:
                 err["data"] = exc.data
             reply = {"jsonrpc": "2.0", "id": req_id, "error": err}
+        except Exception:
+            log.exception("fake Zaparoo handler failed for %s", method)
+            reply = {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32603, "message": "internal error"}}
+        await self._send(ws, reply)
+        for name, note in after:
+            await self.notify(name, note)
+
+    @staticmethod
+    async def _send(ws: web.WebSocketResponse, reply: dict[str, Any]) -> None:
         if not ws.closed:
-            await ws.send_str(json.dumps(reply))
+            with contextlib.suppress(ConnectionError):  # the client went away mid-answer
+                await ws.send_str(json.dumps(reply))
 
     # --- methods -------------------------------------------------------------------------------
-    async def _call(self, method: str, p: dict[str, Any]) -> Any:
+    async def _call(self, method: str, p: dict[str, Any], after: list[tuple[str, dict[str, Any]]]) -> Any:
         if method == "version":
             return {"version": "2.20.0", "platform": "mister"}
         if method == "media":
@@ -294,7 +331,7 @@ class FakeZaparoo:
         if method == "launchers":
             return {"launchers": self.launchers}
         if method == "run":
-            return await self._run(str(p.get("text") or ""))
+            return await self._run(str(p.get("text") or ""), after)
         if method == "stop":
             await self.quit_game()  # ASSUMPTION Z-STOP-MENU
             return None
@@ -317,7 +354,7 @@ class FakeZaparoo:
             offset = int(cursor)
         else:
             raise RpcError("invalid cursor", code=-32602)
-        size = max(1, min(int(p.get("maxResults") or 100), 1000))
+        size = max(1, min(_int(p, "maxResults", 100), 1000))
         if self.page_cap is not None:
             size = min(size, self.page_cap)
         page = rows[offset : offset + size]
@@ -369,7 +406,7 @@ class FakeZaparoo:
         return {"data": base64.b64encode(tiny_png()).decode(), "contentType": "image/png"}
 
     def _history(self, p: dict[str, Any]) -> list[dict[str, Any]]:
-        limit = max(1, min(int(p.get("limit") or 25), MAX_HISTORY))
+        limit = max(1, min(_int(p, "limit", 25), MAX_HISTORY))
         entries = self.history
         if p.get("distinctMedia"):
             seen: set[str] = set()
@@ -387,7 +424,7 @@ class FakeZaparoo:
                 out.append({**s, "mediaCount": sum(1 for m in self.media if m["system"]["id"] == s["id"])})
         return out
 
-    async def _run(self, text: str) -> None:
+    async def _run(self, text: str, after: list[tuple[str, dict[str, Any]]]) -> None:
         # ASSUMPTION Z-RUN-WAITS: the reply comes after the launch
         if self.run_delay:
             await asyncio.sleep(self.run_delay)
@@ -401,5 +438,9 @@ class FakeZaparoo:
         if not self.available(media["system"]["id"]):
             raise _launch_repair()
         active = self._start_game(media)
-        await self.notify("media.started", {k: active[k] for k in ("systemId", "systemName", "mediaPath", "mediaName")})
+        started = {k: active[k] for k in ("systemId", "systemName", "mediaPath", "mediaName")}
+        if self.started_after_reply:
+            after.append(("media.started", started))
+        else:
+            await self.notify("media.started", started)
         return None

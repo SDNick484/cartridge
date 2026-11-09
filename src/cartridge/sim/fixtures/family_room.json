@@ -116,7 +116,12 @@
       "startedAt": "2026-11-05T19:00:00+00:00",
       "endedAt": "2026-11-05T19:45:00+00:00",
       "playTime": 2700,
-      "mediaId": 1
+      "mediaId": 1,
+      "launcherId": "SNES",
+      "zapScript": "SNES/Super Metroid (USA).sfc",
+      "hasCover": false,
+      "sessionSource": "active_media",
+      "sessionConfidence": "exact"
     },
     {
       "systemId": "Genesis",
@@ -125,7 +130,12 @@
       "mediaPath": "/media/fat/games/Genesis/Sonic the Hedgehog (USA, Europe).md",
       "startedAt": "2026-11-04T20:00:00+00:00",
       "endedAt": "2026-11-04T20:10:00+00:00",
-      "playTime": 600
+      "playTime": 600,
+      "launcherId": "Genesis",
+      "zapScript": "Genesis/Sonic the Hedgehog (USA, Europe).md",
+      "hasCover": false,
+      "sessionSource": "active_media",
+      "sessionConfidence": "exact"
     }
   ]
 }

@@ -244,3 +244,38 @@ async def test_devices_yaml(sim: Simulation, tmp_path: Path) -> None:
     assert loaded.devices[0].label == "Family Room"
     assert loaded.devices[1].port == office(sim).fake.port
     assert loaded.devices[1].host == "127.0.0.1"
+
+
+async def test_malformed_requests_get_error_replies(sim: Simulation) -> None:
+    fake = family(sim).fake
+    async with aiohttp.ClientSession() as s, connect(family(sim), s) as ws:
+        assert (await rpc(ws, "media.search", {"maxResults": "ten"}))["error"]["code"] == -32602
+        assert (await rpc(ws, "media.history", {"limit": "x"}))["error"]["code"] == -32602
+        await ws.send_str("[1, 2]")
+        bad = json.loads(await ws.receive_str())
+        assert bad["error"]["code"] == -32600 and bad["id"] is None
+        await ws.send_str("{nope")
+        assert json.loads(await ws.receive_str())["error"]["code"] == -32700
+        del fake.media[0]["name"]  # a broken library: an unexpected failure in a handler
+        assert (await rpc(ws, "media.search"))["error"]["code"] == -32603
+        assert (await rpc(ws, "version"))["result"]["platform"] == "mister"  # still serving
+
+
+async def test_history_entries_use_session_record_shape(sim: Simulation) -> None:
+    fake = family(sim).fake
+    await fake.play(1)
+    await fake.quit_game()
+    keys = {"launcherId", "zapScript", "hasCover", "startedAt", "endedAt", "playTime", "sessionSource"}
+    assert all(keys | {"sessionConfidence"} <= set(e) for e in fake.history)
+    assert "mediaId" not in fake.history[-1]
+
+
+@pytest.mark.parametrize("after", [False, True])
+async def test_started_notification_order(sim: Simulation, after: bool) -> None:
+    family(sim).fake.started_after_reply = after
+    async with aiohttp.ClientSession() as s, connect(family(sim), s) as ws:
+        await ws.send_str(json.dumps({"id": "7", "method": "run", "params": {"text": "SNES/Super Metroid (USA).sfc"}}))
+        first, second = json.loads(await ws.receive_str()), json.loads(await ws.receive_str())
+    reply, note = (first, second) if after else (second, first)
+    assert reply["id"] == "7" and reply["result"] is None
+    assert note["method"] == "media.started"
