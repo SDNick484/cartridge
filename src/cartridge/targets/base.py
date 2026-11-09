@@ -82,6 +82,10 @@ class TargetEvent:
     kind: EventKind
 
 
+class TargetError(Exception):
+    """A read (systems, catalog, history) that failed; ``str(exc)`` is a sentence naming the device by label."""
+
+
 class LaunchError(Exception):
     """A launch or return-to-menu that didn't happen; ``str(exc)`` is the sentence for the UI."""
 
@@ -131,6 +135,13 @@ class StaleRef(LaunchError):
 
 
 class LaunchTarget(Protocol):
+    """What a device must do. Failures never leak a transport's own exceptions:
+
+    - ``systems``, ``catalog`` and ``history`` raise ``TargetError`` (a half-read catalog must fail the sync,
+      so ``catalog`` raises it mid-iteration too). ``artwork`` returns None on any failure.
+    - ``launch`` and ``return_to_menu`` raise ``LaunchError`` subclasses (``StaleRef`` only from ``launch``).
+    """
+
     name: str  # config key, e.g. "family-room"
     model: str
     platform: Literal["mister", "batocera"]

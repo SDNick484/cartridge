@@ -19,6 +19,7 @@ from cartridge.targets.base import (
     LaunchTimeout,
     Offline,
     StaleRef,
+    TargetError,
     TargetEvent,
 )
 from cartridge.targets.zaparoo import ZaparooTarget
@@ -147,7 +148,7 @@ async def test_catalog_error_midway_propagates(sim: Simulation, make: Make) -> N
     fake.page_cap = 1
     t = await online(make(family(sim)))
     seen = 0
-    with pytest.raises(zc.ZaparooUnavailable):
+    with pytest.raises(TargetError, match="Family Room"):
         async for _ in t.catalog():
             seen += 1
             if seen == 2:
@@ -391,3 +392,55 @@ async def test_offline_target_errors_are_sentences(sim: Simulation, make: Make) 
     with pytest.raises(Offline):
         await t.launch(ref)
     assert await t.artwork(ref, 512) is None
+
+
+async def test_strip_prefixes_skips_rows_outside_prefix(
+    sim: Simulation, make: Make, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake = family(sim).fake
+    outside = fake.media[0]
+    outside["path"] = "/elsewhere/SNES/" + outside["relativePath"]
+    fake.search_relative_path = False
+    t = await online(make(family(sim), strip_prefixes=("/media/fat/games",)))
+    entries = await collect(t)
+    assert str(outside["mediaId"]) not in {e.ref.token for e in entries}
+    assert len(entries) == len(fake.media) - 1
+    assert "Family Room" in caplog.text and "skipping media" in caplog.text
+    assert "media.meta" not in fake.methods  # rel_path comes from the absolute path, so no lookup
+
+
+async def test_reads_raise_target_error_sentences(sim: Simulation, make: Make) -> None:
+    t = make(family(sim))  # never started: not connected
+    for call in (t.systems(), t.history(5)):
+        with pytest.raises(TargetError) as info:
+            await call
+        assert "Family Room" in str(info.value) and "127.0.0.1" not in str(info.value)
+    with pytest.raises(TargetError):
+        await collect(t)
+
+
+async def test_read_error_reply_is_target_error(sim: Simulation, make: Make) -> None:
+    t = await online(make(family(sim)))
+    with pytest.raises(TargetError, match="Family Room"):
+        await t.history(0.5)  # type: ignore[arg-type]  # the fake answers a non-integer limit with an error reply
+
+
+async def test_launch_encryption_after_connect_is_offline_not_stale(sim: Simulation, make: Make) -> None:
+    fake = family(sim).fake
+    t = await online(make(family(sim)))
+    ref = (await collect(t))[0].ref
+    fake.require_encryption = True
+    with pytest.raises(Offline) as info:
+        await t.launch(ref)
+    assert "pairing" in str(info.value) and "Family Room" in str(info.value)
+
+
+async def test_launch_without_zap_script_fails_with_sentence(sim: Simulation, make: Make) -> None:
+    fake = family(sim).fake
+    t = await online(make(family(sim)))
+    ref = (await collect(t))[0].ref
+    fake.media[0]["zapScript"] = ""
+    with pytest.raises(LaunchFailed) as info:
+        await t.launch(ref)
+    assert "Family Room" in str(info.value)
+    assert "run" not in fake.methods

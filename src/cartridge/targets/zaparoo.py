@@ -24,6 +24,7 @@ from ..ids import normalize_rel_path, rel_path_from_abs
 from ..tasks import stop_task
 from ..zaparoo_client import (
     RUN_TIMEOUT,
+    EncryptionRequired,
     ZaparooClient,
     ZaparooError,
     ZaparooTimeout,
@@ -41,11 +42,13 @@ from .base import (
     Image,
     LaunchError,
     LaunchFailed,
+    LaunchTarget,
     LaunchTimeout,
     NowPlaying,
     Offline,
     StaleRef,
     SystemAvailability,
+    TargetError,
     TargetEvent,
     TargetRef,
 )
@@ -93,17 +96,37 @@ class ZaparooTarget:
         if not c.tried.is_set():
             state, message = "connecting", f"Still connecting to {self._label}."
         elif c.needs_pairing:
-            state = "needs_pairing"
-            message = (
-                f"{self._label} needs pairing: Zaparoo's encryption is on and Cartridge can't pair yet. "
-                "Turn encryption off in Zaparoo's config (see the README)."
-            )
+            state, message = "needs_pairing", self._pairing_message()
         elif c.connected:
             state, message = "online", None
         else:
             state = "offline"
             message = c.error or f"No answer from {self._label}: is it on and on the network?"
         return DeviceStatus(state, message, c.version, self._now_playing if state == "online" else None)
+
+    def _pairing_message(self) -> str:
+        return (
+            f"{self._label} needs pairing: Zaparoo's encryption is on and Cartridge can't pair yet. "
+            "Turn encryption off in Zaparoo's config (see the README)."
+        )
+
+    def _unreachable(self) -> str:
+        return self._client.error or f"No answer from {self._label}: is it on and on the network?"
+
+    async def _read(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        """A client call for the read methods: Zaparoo's exceptions become TargetError sentences."""
+        label = self._label
+        try:
+            return await self._client.call(method, params)
+        except EncryptionRequired as exc:
+            raise TargetError(self._pairing_message()) from exc
+        except ZaparooUnavailable as exc:
+            raise TargetError(self._unreachable()) from exc
+        except ZaparooTimeout as exc:
+            raise TargetError(f"{label} didn't answer in time; try again in a moment.") from exc
+        except ZaparooError as exc:
+            log.warning("%s: %s failed: %s", self.name, method, exc)
+            raise TargetError(f"{label} couldn't answer a request ({method}); the server log has details.") from exc
 
     def subscribe(self, listener: Callable[[TargetEvent], None]) -> None:
         self._listeners.append(listener)
@@ -151,8 +174,8 @@ class ZaparooTarget:
 
     # --- reading the library ---------------------------------------------------------------------
     async def systems(self) -> list[SystemAvailability]:
-        systems = (await self._client.call("systems", {"all": True})).get("systems") or []
-        launchers = (await self._client.call("launchers")).get("launchers") or []
+        systems = (await self._read("systems", {"all": True})).get("systems") or []
+        launchers = (await self._read("launchers")).get("launchers") or []
         runnable = {str(ln.get("systemId", "")).lower() for ln in launchers if ln.get("available")}
         return [
             SystemAvailability(
@@ -167,16 +190,15 @@ class ZaparooTarget:
         ]
 
     def _rel_path(self, abs_path: str, relative: object) -> str | None:
+        # Configured prefixes override relativePath outright: mixing the two would split one game's id (spec 6.2).
         if self._strip:
-            rel = rel_path_from_abs(abs_path, self._strip)
-            if rel:
-                return rel
+            return rel_path_from_abs(abs_path, self._strip) or None
         if isinstance(relative, str) and relative:
             return normalize_rel_path(relative) or None
         return None
 
     async def catalog(self) -> AsyncIterator[CatalogEntry]:
-        systems = (await self._client.call("systems", {"all": True})).get("systems") or []
+        systems = (await self._read("systems", {"all": True})).get("systems") or []
         for system in systems:
             if int(system.get("mediaCount") or 0) <= 0:
                 continue
@@ -185,14 +207,18 @@ class ZaparooTarget:
                 params: dict[str, Any] = {"systems": [system["id"]], "maxResults": SEARCH_PAGE}
                 if cursor is not None:
                     params["cursor"] = cursor
-                result = await self._client.call("media.search", params)
+                result = await self._read("media.search", params)
                 rows = [r for r in result.get("results") or [] if isinstance(r, dict) and "mediaId" in r]
                 relatives = await self._relative_paths(rows)
                 for row in rows:
                     abs_path = str(row.get("path") or "")
                     rel = self._rel_path(abs_path, relatives.get(row["mediaId"]))
                     if rel is None:
-                        log.warning("%s: skipping media %s: no usable relative path", self.name, row["mediaId"])
+                        log.warning(
+                            "%s: skipping media %s: no usable relative path (check strip_prefixes)",
+                            self._label,
+                            row["mediaId"],
+                        )
                         continue
                     # ASSUMPTION Z-SEARCH-FIELDS: the system is `systemId` or `system.id`
                     sys_id = row.get("systemId") or (row.get("system") or {}).get("id") or system["id"]
@@ -208,12 +234,15 @@ class ZaparooTarget:
                     break
 
     async def _relative_paths(self, rows: list[dict[str, Any]]) -> dict[Any, str | None]:
-        """relativePath per mediaId: from the search row, or media.meta in batches for rows lacking it."""
+        """relativePath per mediaId: from the search row, or media.meta in batches for rows lacking it.
+
+        With strip_prefixes the path comes from the absolute path, so no lookup is needed.
+        """
         found: dict[Any, str | None] = {r["mediaId"]: r.get("relativePath") for r in rows}
-        need = [mid for mid, rel in found.items() if not rel]
+        need = [] if self._strip else [mid for mid, rel in found.items() if not rel]
         for i in range(0, len(need), META_BATCH):
             batch = need[i : i + META_BATCH]
-            result = await self._client.call("media.meta", {"items": [{"mediaId": m} for m in batch]})
+            result = await self._read("media.meta", {"items": [{"mediaId": m} for m in batch]})
             for item in result.get("items") or []:
                 media = item.get("media") if isinstance(item, dict) else None
                 if isinstance(media, dict):
@@ -244,7 +273,7 @@ class ZaparooTarget:
         return Image(raw, str(result.get("contentType") or "image/webp")) if raw else None
 
     async def history(self, limit: int) -> list[HistoryEntry]:
-        result = await self._client.call("media.history", {"limit": limit, "distinctMedia": True})
+        result = await self._read("media.history", {"limit": limit, "distinctMedia": True})
         return [
             HistoryEntry(
                 system_id=str(e.get("systemId") or ""),
@@ -267,8 +296,10 @@ class ZaparooTarget:
             raise stale from None
         try:
             media = (await self._client.call("media.meta", {"mediaId": media_id})).get("media") or {}
+        except EncryptionRequired:
+            raise Offline(self._pairing_message()) from None
         except ZaparooError:
-            raise stale from None
+            raise stale from None  # Core answered, and doesn't know this id
         except ZaparooTimeout:
             raise LaunchTimeout(f"{label} didn't answer in time; try again.") from None
         except ZaparooUnavailable:
@@ -277,11 +308,16 @@ class ZaparooTarget:
             raise stale
         if media.get("isMissing"):
             raise Gone(f"The file is gone from {label}; sync again.")
+        zap_script = media.get("zapScript")
+        if not isinstance(zap_script, str) or not zap_script:
+            raise LaunchFailed(
+                f"{label} has no way to start this game; sync again, and reindex on the device if it persists."
+            )
         if replace and self._now_playing is not None:
             await self.return_to_menu()
         try:
             # ASSUMPTION Z-RUN-WAITS: the reply comes after the launch finished (Core waits up to 30 s)
-            await self._client.call("run", {"text": media.get("zapScript") or ""}, timeout=RUN_TIMEOUT)
+            await self._client.call("run", {"text": zap_script}, timeout=RUN_TIMEOUT)
         except ZaparooError as exc:
             raise self._run_failure(exc) from None
         except ZaparooTimeout:
@@ -342,3 +378,6 @@ def _now_playing(active: object) -> NowPlaying | None:
         abs_path=active.get("mediaPath") or None,
         started_at=active.get("started") or active.get("startedAt") or None,
     )
+
+
+_conforms: type[LaunchTarget] = ZaparooTarget  # mypy checks the Protocol here
