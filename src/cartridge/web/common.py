@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from importlib import resources
 
 from starlette.datastructures import MutableHeaders
@@ -15,13 +15,23 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import BaseRoute, Mount, Route
 from starlette.staticfiles import StaticFiles
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from starlette.types import ASGIApp, ExceptionHandler, Message, Receive, Scope, Send
 
 from cartridge.core import Core
 from cartridge.errors import ApiError
 from cartridge.events import Event, TooManyClients
 from cartridge.ids import is_game_id
-from cartridge.web.dto import GamePageDTO, Mode, config_dto, device_dto, devices_dto, game_dto, recent_dto, system_dto
+from cartridge.web.dto import (
+    GamePageDTO,
+    Mode,
+    config_dto,
+    device_dto,
+    devices_dto,
+    game_dto,
+    recent_dto,
+    sync_event_dto,
+    system_dto,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,10 +65,6 @@ async def _api_error(request: Request, exc: Exception) -> Response:
     return error_response(exc)
 
 
-async def _key_error(request: Request, exc: Exception) -> Response:
-    return _error(404, "unknown_device", "That device isn't configured.")
-
-
 async def _http_error(request: Request, exc: Exception) -> Response:
     assert isinstance(exc, HTTPException)
     headers = dict(exc.headers) if exc.headers else None
@@ -69,9 +75,8 @@ async def _http_error(request: Request, exc: Exception) -> Response:
     return _error(exc.status_code, "bad_request", "That request couldn't be handled.", headers)
 
 
-EXCEPTION_HANDLERS: dict[type[Exception], Callable[[Request, Exception], Response | object]] = {
+EXCEPTION_HANDLERS: dict[type[Exception], ExceptionHandler] = {
     ApiError: _api_error,
-    KeyError: _key_error,
     HTTPException: _http_error,
 }
 
@@ -166,16 +171,19 @@ def read_routes(core: Core, mode: Mode, *, ping_seconds: float = PING_SECONDS) -
         params = request.query_params
         device = params.get("device") or None
         offset = _int(request, "offset", 0, 0, None)
-        page = core.catalog.games(
-            system=params.get("system") or None,
-            q=params.get("q") or None,
-            device=device,
-            only_device=_flag(request, "only_device", device is not None),
-            favorites=_flag(request, "favorites", False),
-            show_unavailable=_flag(request, "show_unavailable", False),
-            offset=offset,
-            limit=_int(request, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT),
-        )
+        try:
+            page = core.catalog.games(
+                system=params.get("system") or None,
+                q=params.get("q") or None,
+                device=device,
+                only_device=_flag(request, "only_device", device is not None),
+                favorites=_flag(request, "favorites", False),
+                show_unavailable=_flag(request, "show_unavailable", False),
+                offset=offset,
+                limit=_int(request, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT),
+            )
+        except KeyError:  # catalog raises it only for an unconfigured device
+            raise ApiError(404, "unknown_device", "That device isn't configured.") from None
         return JSONResponse(GamePageDTO(games=[game_dto(i) for i in page.items], total=page.total, offset=offset))
 
     async def game(request: Request) -> Response:
@@ -209,7 +217,10 @@ def read_routes(core: Core, mode: Mode, *, ping_seconds: float = PING_SECONDS) -
                 return sse_frame(kind, device_dto(core, str(event.get("device"))))
             except KeyError:
                 return None
-        return sse_frame(kind, event)
+        if kind in ("sync.started", "sync.finished"):
+            return sse_frame(kind, sync_event_dto(event))
+        log.debug("Dropped an unknown hub event type: %r", kind)
+        return None
 
     async def stream() -> AsyncIterator[bytes]:
         try:

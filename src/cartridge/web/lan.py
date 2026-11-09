@@ -126,6 +126,9 @@ class LanGuard:
         headers = Headers(scope=scope)
         if any(name in FORWARDED_HEADERS for name, _ in scope["headers"]):
             return "Requests through a proxy aren't served on the LAN address."
+        for name in ("host", "origin", "x-cartridge"):
+            if len(headers.getlist(name)) > 1:  # which one a proxy or app would honour is ambiguous
+                return f"Requests with more than one {name} header aren't accepted."
         host = parse_host(headers["host"]) if "host" in headers else None
         if host is None or host not in self.hosts:
             return "That host name isn't served here; use the address Cartridge was set up with."
@@ -198,12 +201,11 @@ def _launch_request(data: dict[str, Any]) -> LaunchRequest:
     if not isinstance(device, str) or not isinstance(game, str) or not isinstance(replace, bool):
         raise _bad("device and game must be text and replace must be true or false.")
     try:
-        if not isinstance(rid, str) or len(rid) != 36:
+        if not isinstance(rid, str) or str(uuid.UUID(rid)) != rid.lower():
             raise ValueError
-        uuid.UUID(rid)
     except ValueError:
         raise _bad("request_id must be a UUID.") from None
-    return LaunchRequest(device, game, replace, rid)
+    return LaunchRequest(device, game, replace, rid.lower())
 
 
 def write_routes(core: Core) -> list[BaseRoute]:
@@ -229,6 +231,8 @@ def write_routes(core: Core) -> list[BaseRoute]:
                 task.result()
             except SyncRateLimited as exc:
                 raise ApiError(429, "rate_limited", str(exc), retry_after=max(1, math.ceil(exc.wait))) from None
+            except KeyError:  # sync_now raises it only for a device without a target
+                raise ApiError(404, "unknown_device", "That device isn't configured.") from None
         else:
             task.add_done_callback(_log_failure)
         return JSONResponse({"device": device, "started": True}, 202)
@@ -258,5 +262,5 @@ def build_lan_app(core: Core, hosts: frozenset[str], *, ping_seconds: float = PI
     return Starlette(
         routes=[*read_routes(core, "lan", ping_seconds=ping_seconds), *write_routes(core)],
         middleware=[Middleware(SecurityHeadersMiddleware), Middleware(LanGuard, hosts=hosts)],
-        exception_handlers=EXCEPTION_HANDLERS,  # type: ignore[arg-type]
+        exception_handlers=EXCEPTION_HANDLERS,
     )

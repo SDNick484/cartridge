@@ -337,9 +337,20 @@ async def test_search_api_survives_syntax(lan: httpx.AsyncClient, q: str) -> Non
 async def test_game_detail(lan: httpx.AsyncClient) -> None:
     r = await lan.get(f"/api/games/{SONIC}")
     assert r.status_code == 200 and r.json()["id"] == SONIC
-    for bad in ("aaaaaaaaaaaaaaaa", "short", "..%2f..%2fetc"):
+    for bad, code in (("aaaaaaaaaaaaaaaa", "unknown_game"), ("short", "unknown_game"), ("..%2f..%2fetc", "not_found")):
         r = await lan.get(f"/api/games/{bad}")
-        assert r.status_code == 404 and r.json()["code"] in ("unknown_game", "not_found")
+        assert r.status_code == 404 and r.json()["code"] == code, bad
+
+
+async def test_stray_key_error_is_a_500_not_a_404(core: Core, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(item: Any) -> Any:
+        raise KeyError("bug")
+
+    monkeypatch.setattr("cartridge.web.common.game_dto", broken)
+    app = build_lan_app(core, HOSTS)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://cartridge.local") as client:
+        r = await client.get(f"/api/games/{SONIC}")
+    assert r.status_code == 500 and r.json()["code"] == "internal"
 
 
 async def test_no_paths_in_any_response(lan: httpx.AsyncClient) -> None:
@@ -566,7 +577,7 @@ async def test_sse_other_events_and_ping(core: Core) -> None:
     assert (await s.event())[0] == "hello"
     assert await s.frame() == ": ping"
     core.hub.publish({"type": "sync.finished", "device": "office", "status": "ok"})
-    assert await s.event() == ("sync.finished", {"type": "sync.finished", "device": "office", "status": "ok"})
+    assert await s.event() == ("sync.finished", {"device": "office", "status": "ok"})
     await s.close()
 
 
@@ -600,3 +611,64 @@ async def test_sse_client_limit(core: Core) -> None:
     await fourth.close()
     await b.close()
     assert core.hub.client_count("lan") == 0
+
+
+async def test_sse_events_are_mapped_and_filtered(core: Core) -> None:
+    s = Stream(build_lan_app(core, HOSTS))
+    await s.started()
+    await s.event()
+    core.hub.publish({"type": "mystery", "device": "office", "secret": "/media/fat/x"})
+    core.hub.publish({"type": "sync.started", "device": "office"})
+    core.hub.publish({"type": "sync.finished", "device": "office", "status": "ok", "error": "/media/fat/x"})
+    assert await s.event() == ("sync.started", {"device": "office", "status": None})
+    assert await s.event() == ("sync.finished", {"device": "office", "status": "ok"})
+    await s.close()
+
+
+# -- guard hardening ------------------------------------------------------------------------------
+
+
+def write_url(path: str) -> str:
+    return path.format(name="family-room", id=SONIC)
+
+
+@pytest.mark.parametrize(("method", "path"), LAN_WRITE_ROUTES)
+async def test_every_write_route_is_guarded(lan: httpx.AsyncClient, method: str, path: str) -> None:
+    url = write_url(path)
+    bad_headers = [
+        {"Content-Type": "application/json"},
+        {**W, "Origin": "http://evil.example.com"},
+        {"X-Cartridge": "1", "Content-Type": "application/x-www-form-urlencoded"},
+    ]
+    for headers in bad_headers:
+        r = await lan.request(method, url, content=b"{}", headers=headers)
+        assert r.status_code == 403 and r.json()["code"] == "bad_request", headers
+    get = await lan.get(url)
+    assert get.status_code == 405 and get.json()["code"] == "method_not_allowed"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [(b"host", b"cartridge.local"), (b"origin", b"http://cartridge.local"), (b"x-cartridge", b"1")],
+)
+async def test_duplicate_guard_headers_refused(core: Core, extra: tuple[bytes, bytes]) -> None:
+    app = build_lan_app(core, HOSTS)
+    headers = [
+        (b"host", b"cartridge.local"),
+        (b"content-type", b"application/json"),
+        (b"x-cartridge", b"1"),
+        (b"origin", b"http://cartridge.local"),
+        extra,
+    ]
+    status, _, body = await raw_request(app, "POST", f"/api/favorites/{SONIC}", headers=headers)
+    assert status == 403 and json.loads(body)["code"] == "bad_request"
+
+
+async def test_request_id_must_be_canonical(lan: httpx.AsyncClient, core: Core) -> None:
+    raw = uuid.uuid4()
+    for rid in (f"--{raw.hex}--", raw.hex, f"{{{raw}}}", f"urn:uuid:{raw}"):
+        r = await lan.post("/api/launch", content=json.dumps(launch_body(request_id=rid)), headers=W)
+        assert r.status_code == 400 and r.json()["code"] == "bad_request", rid
+    r = await lan.post("/api/launch", content=json.dumps(launch_body(request_id=str(raw).upper())), headers=W)
+    assert r.status_code == 200
+    assert str(raw) in core.launcher._seen  # passed on in lowercase

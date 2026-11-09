@@ -56,6 +56,11 @@ class DeviceDTO(TypedDict):
     sync: SyncDTO | None
 
 
+class SyncEventDTO(TypedDict):
+    device: str
+    status: str | None
+
+
 class SystemDTO(TypedDict):
     id: str
     name: str
@@ -179,3 +184,8 @@ def config_dto(core: Core, mode: Mode) -> ConfigDTO:
         devices_configured=sum(1 for n in names if core.registry.target(n) is not None),
         synced=any((s := core.catalog.sync_state(n)) is not None and s.last_good_at is not None for n in names),
     )
+
+
+def sync_event_dto(event: dict[str, object]) -> SyncEventDTO:
+    status = event.get("status")
+    return SyncEventDTO(device=str(event.get("device")), status=status if isinstance(status, str) else None)
