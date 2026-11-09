@@ -1,7 +1,8 @@
 # Cartridge: design
 
-Status: approved in brainstorming on 2026-11-07. This is the source of truth for the
-implementation plan. A decision here changes only by editing this file in a reviewed PR.
+Status: approved in brainstorming on 2026-11-07; §8 (artwork) amended 2026-11-08. This is
+the source of truth for the implementation plan. A decision here changes only by editing
+this file in a reviewed PR.
 
 Cartridge is a self-hosted web app. It shows a game library as a box-art grid that you can
 filter by system and search. Picking a game launches it on a device you choose explicitly.
@@ -46,7 +47,7 @@ or tests. Examples use `example.com` and device names like `family-room` and `of
 | D5 | MQTT / Home Assistant | None from Cartridge. Play tracking is `mcp-server-misterfpga track` (and Batocera's playtracker later). The README says so |
 | D6 | Name / host | **Cartridge**. Repo `SDNick484/cartridge`; deployed at `games.<owner domain>` |
 | D7 | Catalog source | Each device's Zaparoo index, read through the API. The app does not scan the share |
-| D8 | Artwork | Zaparoo `media.image`, then libretro-thumbnails, then a generated tile. Cached locally. No ScreenScraper in v1 |
+| D8 | Artwork (amended 2026-11-08) | **The scraped share is the source of truth.** The owner scrapes the ROM share once, outside Cartridge, with a hash-matching scraper. Cartridge reads that art through its optional read-only share reader and through Zaparoo `media.image`, then falls back to libretro-thumbnails, then to a generated tile. Fallback art is upgraded when share art appears. Everything is cached locally. Cartridge holds no scraper credentials |
 | D9 | Stack | Async Python (Starlette + uvicorn), SQLite, plain-JS SPA, SSE. Two listeners in one process |
 | D10 | Shared code | Promote the Zaparoo client (and Access verification) into `mcp-server-shared`. Cartridge starts with local copies until those PRs merge |
 | D11 | Batocera later | `LaunchTarget` Protocol now. The cabinet most likely uses the same `ZaparooTarget` with `platform: batocera`; an `EmulationStationTarget` is the fallback |
@@ -83,6 +84,8 @@ confirmed on hardware is an `Assumption` (§13).
   `delivery: inline`. It returns base64 `data` and a `contentType` (usually WebP).
 - **Built-in scrapers** are only `gamelist.xml`, `media-folder` and `mister-docs`. Core has
   no online artwork source, so on a fresh share `media.image` often has nothing to give.
+  A share scraped into ES-style `gamelist.xml` plus image folders is exactly what those
+  scrapers read, which is why §8 makes the scraped share the primary art source.
 - **History, active media and stop.**
   - `media.history {limit ≤ 100, distinctMedia}` returns entries with `systemId`,
     `mediaPath`, `mediaName`, `startedAt`, `playTime` and an optional `mediaId`.
@@ -157,13 +160,14 @@ Each unit has one job and is testable alone.
 | `zaparoo_client.py` | WebSocket JSON-RPC client: ids, reconnect/backoff, ping, notifications, **`ALLOWED_METHODS`**, transport seam (`legacy` now, `paired` later). Local copy pending the shared promotion (§11) | aiohttp |
 | `registry.py` | `DeviceRegistry`: config → targets; lookup by name only; status snapshot; per-device locks and rate limits | targets, `ratelimit` |
 | `catalog.py` | Sync each device's index into SQLite; availability; history ingest; queries for the API | db, registry |
-| `art.py` | Artwork chain, local cache, placeholder tiles, fetch rate limit (§8) | db, registry, httpx |
+| `art.py` | Artwork chain and ranks, local cache, upgrades after sync, versioned art URLs, placeholder tiles, fetch rate limit (§8) | db, registry, gamelist, httpx |
+| `gamelist.py` | Read-only share reader: parses ES-style `gamelist.xml` under `ART_SHARE_DIR` and returns contained, size-capped, sniffed image bytes (§8.2) | defusedxml |
 | `launch.py` | The launch/return-to-menu flow and its validation order (§7) | catalog, registry |
 | `events.py` | `EventHub`: fan-out of device/now-playing/sync events to SSE clients | — |
 | `web/lan.py`, `web/remote.py`, `web/common.py` | Starlette apps, route tables, DTOs, guards (§9) | everything above |
 | `access.py` | Cloudflare Access JWT verification (ASGI middleware). Local copy pending the shared promotion | pyjwt[crypto] |
 | `logsafe.py`, `tasks.py`, `ratelimit.py` | From `mcp-server-shared` via `scripts/sync_shared.py` + `shared.lock`; **never edited here** | — |
-| `cli.py` | `serve` (default), `check` (config + reach each device), `sync`, `simulate` | — |
+| `cli.py` | `serve` (default), `check` (config + reach each device + share mount), `sync`, `art-refresh`, `simulate` | — |
 | `sim/` | `FakeZaparoo` (aiohttp server speaking real JSON-RPC), fixtures, `Simulation` harness; used by tests **and** `cartridge simulate` | aiohttp |
 | `static/` | `index.html`, ES-module JS (`app.js`, `api.js`, `grid.js`, `devices.js`, `focus.js`), `style.css`, bundled font | — |
 
@@ -251,7 +255,8 @@ favorites(game_id PK → games, added_at)
 history(device, started_at, game_id NULL, system_id, media_name, play_time,
         PK(device, started_at))                           -- cached from media.history
 launches(id PK, device, game_id, requested_at, outcome, detail)   -- Cartridge's own log
-art(game_id PK, source, file, content_type, status, fetched_at, retry_after)
+art(game_id PK, source, rank, file, content_type, etag, status, fetched_at, retry_after)
+                                                -- source: share|zaparoo|libretro|none (§8.1)
 sync_runs(id PK, device, started_at, finished_at, status, seen, added, missing, error)
 ```
 
@@ -349,27 +354,100 @@ calls `stop`. The UI always confirms first.
 
 ## 8. Artwork
 
-Cache directory: `/var/lib/cartridge/art/<aa>/<game_id>.<ext>`. Serve path:
-`/art/<game_id>`, with `Cache-Control: public, max-age=604800` and an `ETag`. The path is
-keyed only by the validated id.
+**Principle: the share is the source of truth for artwork, and Cartridge does not scrape.**
+- The owner scrapes the ROM share once, with a scraper that matches by file hash, using
+  their own account (README "Artwork: scrape your share", §14). That puts ES-style
+  `gamelist.xml` files and image folders next to the ROMs.
+- Every consumer then reads the same files: Zaparoo Core's built-in `gamelist.xml` scraper
+  (§3), a Batocera install that uses the share, and Cartridge.
+- Each game is scraped once against the owner's quota, not once per app. Online sources in
+  Cartridge only fill gaps.
+
+**Cache and serving.**
+- Cache directory: `/var/lib/cartridge/art/<aa>/<game_id>.<ext>`.
+- Serve path: `/art/<game_id>`, keyed only by the validated id.
+- API DTOs carry `art_url: "/art/<game_id>?v=<etag8>"`. The server uses `v` only as a cache
+  key and always serves the current bytes, with an `ETag` and
+  `Cache-Control: public, max-age=31536000, immutable`. An upgraded image (§8.1) gets a new
+  URL, so the grid shows it on the next load instead of waiting out a browser cache.
 
 **Fetching is lazy.** Art is fetched on first request, plus a background prefetch after a
 sync, at concurrency 2.
 
-| Order | Source | Notes |
-|---|---|---|
-| 1 | Zaparoo `media.image {mediaId, imageTypes: ["boxart","cover"], maxSize: 512, delivery: "inline"}` from any online device that has the game | Free when ES `gamelist.xml` or media folders sit on the share. Licensing is whatever the owner put there |
-| 2 | **libretro-thumbnails**: `https://thumbnails.libretro.com/<Playlist Name>/Named_Boxarts/<Name>.png` | `<Name>` is the No-Intro-style title with ``&*/:`<>?\|"`` replaced by `_` (ASSUMPTION L-THUMB-URL). The system → playlist-name map is a static table in `art.py`, covering only the systems in fixtures and the common MiSTer cores; unknown systems skip this source. One request per second, generic User-Agent `cartridge/<version>`, honor 429/`Retry-After`. The repo has no explicit license; serving it only on the LAN and behind Access avoids public redistribution |
-| 3 | Generated tile | SVG rendered server-side: title on the system's color. Never cached as "found" |
+### 8.1 Sources, ranks and upgrades
 
-- **Misses aren't retried right away.** A miss is recorded (`status = none`) with
-  `retry_after` set to now + 7 days, so a missing title doesn't cost a request every page
-  view.
-- **Off by default:** ScreenScraper (account, quotas, redistribution terms) can come later as
-  an opt-in source using the owner's credentials. Online sources can be switched off with
-  `ART_ONLINE=0`.
-- **Tests never fetch the internet.** httpx goes through a `MockTransport`. Fixture images
-  are generated, and no downloaded artwork is committed.
+| Order | Source (`art.source`) | Rank | Notes |
+|---|---|---|---|
+| 1 | **Share reader** (`share`), only when `ART_SHARE_DIR` is set | 1 | Reads the scraped share directly from a read-only mount (§8.2). It is a cheap local read, it works while every device is offline, and it covers the case where `media.image` doesn't surface `gamelist.xml` art (ASSUMPTION Z-IMAGE-GAMELIST fails) |
+| 2 | **Zaparoo** (`zaparoo`): `media.image {mediaId, imageTypes: ["boxart","cover"], maxSize: 512, delivery: "inline"}` from any online device that has the game | 1 | The primary path when no share mount is configured. Core picks up `gamelist.xml` and media folders when it builds its media database (ASSUMPTION Z-IMAGE-GAMELIST). Art scraped later appears only after the owner rebuilds that database in Core's UI, because Cartridge never sends `media.generate` (§9.3) |
+| 3 | **libretro-thumbnails** (`libretro`): `https://thumbnails.libretro.com/<Playlist Name>/Named_Boxarts/<Name>.png` | 2 | `<Name>` is the No-Intro-style title with ``&*/:`<>?\|"`` replaced by `_` (ASSUMPTION L-THUMB-URL). The system → playlist-name map is a static table in `art.py`, covering only the systems in fixtures and the common MiSTer cores; unknown systems skip this source. One request per second, generic User-Agent `cartridge/<version>`, honor 429/`Retry-After`. Skipped when `ART_ONLINE=0` |
+| 4 | **Generated tile** (`none`) | 3 | SVG rendered server-side: the title on the system's color. Never cached as "found" |
+
+- **Rank-2 and rank-3 results are provisional.** When a device sync succeeds, games whose art
+  has rank 2 or 3 get one more try at the rank-1 sources, at concurrency 2. The same retry
+  runs when the periodic sync sees a `gamelist.xml` under `ART_SHARE_DIR` with a newer
+  mtime; Cartridge polls during sync and never watches the files. A hit replaces the file,
+  the `etag` and therefore the `art_url`.
+- **Rank-1 results are final.** They are never refetched automatically.
+  `cartridge art-refresh [--system <id>]` clears them when the owner rescrapes.
+- **Misses don't cost requests on every page view.** A miss is recorded (`status = none`).
+  `retry_after` (now + 7 days) gates only the libretro request; rank-1 retries follow the
+  sync trigger above.
+- **Example.** *Super Metroid* is added to the share before the owner scrapes. The first
+  request gets the libretro box art (rank 2). The owner scrapes that night. Then either:
+  - the next sync sees the newer `SNES/gamelist.xml`, the share reader finds
+    `./images/Super Metroid (Japan, USA)-thumb.png`, and the game moves to `share`
+    (rank 1); or
+  - with no share mount, the move happens on the first sync after the owner rebuilds Core's
+    media database.
+
+  Either way, `art_url` changes from `?v=3f9a…` to `?v=c21e…`.
+
+### 8.2 Share reader (`gamelist.py`)
+
+- **Off by default.** It is enabled by `ART_SHARE_DIR`, the directory that holds the system
+  folders as mounted **read-only** in Cartridge's container, for example `/mnt/games` for
+  the share the MiSTers mount at `/media/fat/games`.
+  - The container never gets a writable mount.
+  - Scraping runs elsewhere, with the scraper's credentials (§14).
+- **Locating a game.**
+  - The system folder is the path segment immediately before the game's `relativePath` in
+    the device's `abs_path`. Both are server-only (§6.3, ASSUMPTION C-RELPATH). For
+    example, `/media/fat/games/SNES/Super Metroid (Japan, USA).sfc` with `relativePath`
+    `Super Metroid (Japan, USA).sfc` gives the folder `SNES`.
+  - The reader opens `<ART_SHARE_DIR>/SNES/gamelist.xml` and matches the `<game>` whose
+    `<path>`, with any leading `./` removed and normalized to NFC, equals that
+    `relativePath`.
+- **Picking an image.** It takes `<thumbnail>` first, then `<image>` (ASSUMPTION
+  G-LAYOUT: `gamelist.xml` sits in each system folder, its paths are relative to that
+  folder, and box art is in one of those two elements, as Batocera and ES-style scrapers
+  write them).
+- **Containment and parsing.**
+  - Every image path is resolved with `os.path.realpath` and must stay inside the system
+    folder's own realpath. This rejects `../`, absolute paths and symlink escapes.
+  - Only regular files are read.
+  - `gamelist.xml` is parsed with `defusedxml`, after a 32 MB size cap.
+  - Images are capped at 5 MB.
+  - The content type comes from magic bytes (PNG, JPEG, WebP or GIF), never from the
+    extension. Anything else is a miss.
+- **Caching.** Parsed gamelists are cached in memory, keyed by `(path, mtime)`.
+- **What leaves the server.** Bytes are copied into the art cache. No share path ever
+  reaches a DTO, a log line or the `art` table, which stores cache-relative names only. The
+  §9.1 leak test covers this.
+- **A missing or unreadable mount** disables the reader with a sentence in `check` and in the
+  `/healthz` detail (§12). The other sources keep working.
+
+### 8.3 Terms and tests
+
+- **Licensing.** Art the owner scraped carries that service's terms; ScreenScraper media,
+  for example, is for personal use. Art from libretro-thumbnails comes from a repo with no
+  explicit license. Cartridge serves all of it only on the LAN and to Access-allowed users.
+  The remote view is never public.
+- **Tests never fetch the internet.**
+  - httpx goes through a `MockTransport`.
+  - The share reader runs against a fixture share built in `tmp_path`, with generated
+    images.
+  - No downloaded or scraped artwork is committed.
 
 ---
 
@@ -378,7 +456,8 @@ sync, at concurrency 2.
 1. **No paths to the browser.**
    - API DTOs are explicit `TypedDict`s with no path, ref or host fields.
    - A test walks every JSON response, both apps and all fixtures, and fails if it finds any
-     fixture `abs_path` or `rel_path` substring, `/media/`, or a configured host.
+     fixture `abs_path` or `rel_path` substring, `/media/`, `ART_SHARE_DIR`, or a
+     configured host.
 2. **No client-chosen targets.** Devices come only from config, and only by name. Every
    launch is validated in the §7.3 order.
 3. **The Zaparoo allow-list.**
@@ -499,7 +578,8 @@ sync, at concurrency 2.
 | Core demands encryption (`-32002`) | Card shows "needs pairing (Zaparoo encryption is on)"; `auth: paired` is the fix once implemented; until then the README says how to set `encryption = false` |
 | Never synced | Empty state explaining indexing in Zaparoo's UI and **Sync now** |
 | Sync failed midway | Previous data kept (no `present` changes from a failed run); error on the card |
-| Art unavailable | Generated tile |
+| Art unavailable | Generated tile (rank 3), upgraded later per §8.1 |
+| `ART_SHARE_DIR` missing or unreadable | Share reader off; `check` and the `/healthz` detail say "Artwork share not readable at ART_SHARE_DIR: is it mounted read-only in this container?"; other art sources continue |
 | Remote app, Access misconfigured | 403 for everything but `/healthz`; startup refuses if settings missing |
 | Database locked/corrupt | `/healthz` reports not-ready; `check` says what to do |
 
@@ -533,7 +613,16 @@ Errors reach the UI as `{code, message}`. `message` is a sentence a person can a
   - **Sync:** pagination, `present` flips, a failed run changes nothing, availability from
     `systems {all: true}`.
   - **History and now-playing:** resolution to game ids, and offline cache.
-  - **Art chain:** order, miss caching, `Retry-After` honored, no network in tests.
+  - **Art chain:** source order and ranks, miss caching, `Retry-After` honored, no network
+    in tests.
+  - **Upgrades:** a libretro-backed game moves to `share` after a sync once its
+    `gamelist.xml` mtime is newer, and to `zaparoo` after the fake device starts returning
+    an image. `art_url` changes on upgrade. Rank-1 art is not refetched until
+    `art-refresh`.
+  - **Share reader:** matches by `relativePath`, including the `&`, `:` and non-ASCII
+    fixture names. Rejects `../`, absolute paths, symlink escapes, non-regular files,
+    oversize files and non-image bytes. Is off with `ART_SHARE_DIR` unset. Reports a
+    missing mount through `check`.
   - **Config:** validation sentences; a bad device doesn't block the others.
   - **Assumptions registry:** every id is cited in code with `# ASSUMPTION <id>` and listed
     in README and HARDWARE_VALIDATION.md (sibling pattern).
@@ -557,6 +646,8 @@ Errors reach the UI as `{code, message}`. `message` is a sentence a person can a
 | Z-IMAGE | `media.image` inline returns base64 + `contentType`, and an error/empty result when no art |
 | Z-ENC-ERROR | Encryption-required rejection is `-32002` |
 | L-THUMB-URL | libretro-thumbnails URL and character-replacement rule |
+| Z-IMAGE-GAMELIST | After Core rebuilds its media database on a share that holds ES-style `gamelist.xml` and images, `media.image` returns that box art for `imageTypes: ["boxart","cover"]` |
+| G-LAYOUT | The scraper writes `gamelist.xml` into each system folder, with `./`-relative `<path>`s that equal Core's `relativePath`, and box art in `<thumbnail>` or `<image>` |
 
 ---
 
@@ -586,12 +677,14 @@ Errors reach the UI as `{code, message}`. `message` is a sentence a person can a
   | `DATA_DIR` | `/var/lib/cartridge` |
   | `DEVICES_FILE` | — |
   | `ART_ONLINE` | `1` |
+  | `ART_SHARE_DIR` | — (share reader off) |
   | `SYNC_INTERVAL_HOURS` | `6` |
   | `LOG_LEVEL` | — |
 - **Project tooling:**
   - Python ≥ 3.11, `pyproject.toml` (setuptools), package `cartridge` with console script
     `cartridge`.
-  - Dependencies: `starlette`, `uvicorn`, `aiohttp`, `httpx`, `pyjwt[crypto]`, `pyyaml`.
+  - Dependencies: `starlette`, `uvicorn`, `aiohttp`, `httpx`, `pyjwt[crypto]`, `pyyaml`,
+    `defusedxml`.
   - Dev: `pytest`, `anyio`, `ruff`, `mypy`, `playwright`, `types-PyYAML`.
   - ruff (E, W, F, I, UP, B, SIM; line 120) plus `ruff format`; mypy `strict = true`.
 - **CI** (`.github/workflows/ci.yml`):
@@ -612,8 +705,8 @@ Errors reach the UI as `{code, message}`. `message` is a sentence a person can a
     shared-file rule, and the assumption tagging;
   - the module map and the gate.
 - **README:** what it is; screenshots from the simulator; **Install Zaparoo Core on a
-  MiSTer**; device config; deploy on Alpine; cloudflared and Access; artwork sources and
-  their terms; Home Assistant tracking via `mcp-server-misterfpga track`; the assumptions
+  MiSTer**; device config; deploy on Alpine; cloudflared and Access; **Artwork: scrape your share**
+  (below) and each art source's terms; Home Assistant tracking via `mcp-server-misterfpga track`; the assumptions
   table; and `cartridge simulate` for trying it without hardware.
   - **Install Zaparoo Core on a MiSTer** (it isn't installed by default):
     1. Run Update All, press UP during the countdown, turn on **Zaparoo** under **Tools &
@@ -621,6 +714,20 @@ Errors reach the UI as `{code, message}`. `message` is a sentence a person can a
     2. Open **Scripts → zaparoo** on the MiSTer and accept starting it as a service.
     3. Open `http://<mister-ip>:7497/app/` and build the media database.
     4. Don't configure a Zaparoo API key.
+  - **Artwork: scrape your share.** This is setup documentation; Cartridge runs none of it.
+    1. Why: one scrape, matched by file hash, serves Zaparoo, Batocera and Cartridge, and
+       spends the scraper quota once.
+    2. Worked example with Skyscraper (the maintained Gemba fork), run on a separate host
+       or container that mounts the share **read-write**, using the owner's ScreenScraper
+       account. It runs per system with `-s screenscraper` into Skyscraper's cache, then
+       without `-s` to write a Batocera-style gamelist (`-f batocera`) and media into that
+       system folder (`-i`, `-g`, `-o`).
+    3. A short checklist to confirm G-LAYOUT on the first system before scraping the rest.
+    4. Rebuild Core's media database on each MiSTer (`http://<mister-ip>:7497/app/`) so
+       `media.image` sees the new art (Z-IMAGE-GAMELIST).
+    5. Optionally mount the share read-only into Cartridge's container and set
+       `ART_SHARE_DIR`.
+    6. Cartridge's container never holds scraper credentials or a writable mount.
 - **Git:**
   - Commits are authored with `SDNick484@users.noreply.github.com`.
   - Work happens on branches with PRs into `main`.
@@ -634,7 +741,9 @@ Errors reach the UI as `{code, message}`. `message` is a sentence a person can a
 - The Batocera target (the Protocol and config field exist).
 - `auth: paired`. The transport seam and the `-32002` handling exist, and a `cartridge pair`
   CLI comes later.
-- ScreenScraper or any other credentialed scraper.
+- ScreenScraper or any other credentialed scraper **inside Cartridge**. Scraping is the
+  owner's step on the share (§8, §14 README); Cartridge only reads the result.
+- Writing to the share.
 - Per-person profiles; favorites and history are household-wide.
 - MQTT and Home Assistant publishing (D5).
 - Triggering a Core reindex (`media.generate`), NFC, editing metadata, managing ROMs.
