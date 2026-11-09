@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -275,3 +276,33 @@ def test_games_rowid_is_an_integer_key(db: Database) -> None:
     pk = [r["name"] for r in db._conn.execute("PRAGMA table_info(games)") if r["pk"]]
     assert pk == ["seq"]  # FTS rows must follow a key VACUUM can't renumber
     assert any(r["unique"] for r in db._conn.execute("PRAGMA index_list(games)"))
+
+
+def test_ping_fails_on_a_corrupt_database(tmp_path: Path) -> None:
+    path = tmp_path / "c.db"
+    d = Database.open(path)
+    d.upsert_system("snes", "Super Nintendo", None, None)
+    for i in range(200):
+        add(d, f"g{i}", f"Game {i} " + "x" * 200)
+    d.close()
+    with sqlite3.connect(path) as conn:
+        root = conn.execute("SELECT rootpage FROM sqlite_master WHERE name = 'games'").fetchone()[0]
+        page = conn.execute("PRAGMA page_size").fetchone()[0]
+    with path.open("r+b") as f:  # trash the games table's root page; the schema stays readable
+        f.seek((root - 1) * page)
+        f.write(b"\xa5" * page)
+    corrupt = Database.open(path)
+    assert not corrupt.ping()
+
+
+def test_ping_reruns_quick_check_at_most_once_a_minute(db: Database) -> None:
+    now = [100.0]
+    db._clock = lambda: now[0]
+    statements: list[str] = []
+    db._conn.set_trace_callback(statements.append)
+    checks = lambda: sum("quick_check" in s for s in statements)  # noqa: E731
+    assert db.ping() and db.ping()
+    assert checks() == 1  # /healthz is polled, and the remote one answers before auth: no full scan per probe
+    now[0] += 61
+    assert db.ping()
+    assert checks() == 2

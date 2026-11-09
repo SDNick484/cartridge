@@ -24,7 +24,7 @@ let list = null;
 export const getDevices = () => devices;
 export const getSelected = () => devices.find((d) => d.name === selected) ?? null;
 export const deviceByName = (name) => devices.find((d) => d.name === name) ?? null;
-const usable = (device) => device.state !== "misconfigured"; // never offered, never auto-selected
+export const usable = (device) => device.state !== "misconfigured"; // never offered, never auto-selected
 export const stateText = (device) => STATE_TEXT[device.state] ?? device.state;
 
 export function initDevices({ pillButton, deviceSheet, deviceList, isRemote }) {

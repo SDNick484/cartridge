@@ -2,7 +2,7 @@
 
 import { getJSON } from "./api.js";
 import { bus, clear, el } from "./dom.js";
-import { deviceByName, getDevices, getSelected, syncNow } from "./devices.js";
+import { deviceByName, getDevices, getSelected, syncNow, usable } from "./devices.js";
 
 const PAGE_SIZE = 120;
 const MAX_LIMIT = 500; // the server caps a page here
@@ -267,13 +267,20 @@ function showMessage(heading, text, ...extra) {
 function showEmpty() {
   const plain = view === "all" && !query;
   if (!synced && plain) {
-    const buttons = remote ? [] : getDevices().map(syncButton);
+    const devices = remote ? [] : getDevices();
+    const usableDevices = devices.filter(usable);
+    const buttons = usableDevices.map((device) => syncButton(device, usableDevices.length > 1));
+    // A misconfigured device can't sync until its config is fixed, so say what is wrong instead.
+    const problems = devices
+      .filter((device) => !usable(device))
+      .map((device) => el("p", { class: "device-message", text: device.message ?? `${device.label} is misconfigured.` }));
     showMessage(
       "Nothing has been indexed yet",
       remote
         ? "No games have been synced yet; sync from home first."
-        : "Cartridge lists what Zaparoo has indexed on each device. Open Zaparoo's own web UI and update its media index on the device, then press Sync now here.",
+        : `Cartridge lists what Zaparoo has indexed on each device. Open Zaparoo's own web UI and update its media index on the device${buttons.length ? ", then press Sync now here" : ""}.`,
       el("p", {}, el("a", { href: README_URL, text: "Read the README for the full setup", rel: "noreferrer" })),
+      ...problems,
       el("div", { class: "actions" }, ...buttons),
     );
     return;
@@ -285,8 +292,7 @@ function showEmpty() {
   showMessage("No games match", hint ?? "Try another search, pick another chip, or turn off the device filter.");
 }
 
-function syncButton(device) {
-  const many = getDevices().length > 1;
+function syncButton(device, many) {
   return el("button", {
     type: "button",
     class: "btn primary",

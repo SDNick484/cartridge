@@ -7,7 +7,15 @@ from pathlib import Path
 import httpx
 import pytest
 
-from cartridge.art import DEFAULT_COLOR, PLAYLISTS, SYSTEM_COLORS, ArtCache, libretro_url, placeholder_svg
+from cartridge.art import (
+    DEFAULT_COLOR,
+    DEVICE_COOL_OFF,
+    PLAYLISTS,
+    SYSTEM_COLORS,
+    ArtCache,
+    libretro_url,
+    placeholder_svg,
+)
 from cartridge.catalog import Catalog
 from cartridge.db import Database
 from cartridge.events import EventHub
@@ -15,7 +23,7 @@ from cartridge.ids import game_id
 from cartridge.registry import DeviceRegistry
 from cartridge.sim.fake_zaparoo import tiny_png
 from cartridge.sim.harness import Simulation
-from cartridge.targets.base import DeviceStatus
+from cartridge.targets.base import DeviceStatus, TargetError
 
 pytestmark = pytest.mark.anyio
 
@@ -170,6 +178,39 @@ async def test_miss_is_cached_for_7_days(art: ArtCache, net: Net, db: Database, 
     clock.advance(8 * 86400)
     await art.get(DKC)
     assert len(net.requests) == 2
+
+
+async def test_device_connection_loss_is_transient(art: ArtCache, sim: Simulation, db: Database) -> None:
+    for dev in sim.devices:
+        dev.fake.close_after = "media.image"  # the socket drops mid-request, unanswered
+    got = await art.get(METROID)
+    assert got is not None and not got.found and got.transient
+    assert db.art(METROID) is None  # no 7-day miss for a device that couldn't answer
+
+
+async def test_failing_device_is_not_asked_again_during_its_cool_off(
+    art: ArtCache, registry: DeviceRegistry, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    for name in registry.names():
+        target = registry.target(name)
+        assert target is not None
+
+        async def failing(ref, max_size, name=name):  # type: ignore[no-untyped-def]
+            calls.append(name)
+            raise TargetError(f"{name} didn't answer in time; try again in a moment.")
+
+        monkeypatch.setattr(target, "artwork", failing)
+    first = await art.get(METROID)
+    assert first is not None and first.transient
+    asked = len(calls)
+    assert asked >= 1
+    again = await art.get(DKC)  # a grid page of tiles must not pile requests on a struggling device
+    assert again is not None and again.transient
+    assert len(calls) == asked
+    clock.advance(DEVICE_COOL_OFF + 1)
+    await art.get(METROID)
+    assert len(calls) == 2 * asked
 
 
 async def test_retry_after_honored(art: ArtCache, net: Net, db: Database, clock: Clock) -> None:
