@@ -208,7 +208,9 @@ class Catalog:
                 self.db.finish_sync_run(run_id, self._stamp(), status, seen, added, missing, error)
             except Exception:
                 log.exception("Could not record the result of the sync of %s.", device)
-        self.hub.publish({"type": "sync.finished", "device": device, "status": status})
+        self.hub.publish(
+            {"type": "sync.finished", "device": device, "status": status, "added": added, "missing": missing}
+        )
         return SyncResult(device, status, seen, added, missing, error)
 
     def _apply(self, device: str, systems: list[SystemAvailability], entries: list[CatalogEntry], stamp: str) -> int:

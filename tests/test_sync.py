@@ -178,7 +178,8 @@ async def test_sync_publishes_events(sim: Simulation, db: Database, registry: De
     async with hub.subscribe("lan") as events:
         await cat.sync("office")
         assert await anext(events) == {"type": "sync.started", "device": "office"}
-        assert await anext(events) == {"type": "sync.finished", "device": "office", "status": "ok"}
+        finished = {"type": "sync.finished", "device": "office", "status": "ok", "added": 6, "missing": 0}
+        assert await anext(events) == finished
 
 
 def test_utcnow_is_aware_utc() -> None:

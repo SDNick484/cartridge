@@ -573,8 +573,8 @@ async def test_sse_other_events_and_ping(core: Core) -> None:
     await s.started()
     assert (await s.event())[0] == "hello"
     assert await s.frame() == ": ping"
-    core.hub.publish({"type": "sync.finished", "device": "office", "status": "ok"})
-    assert await s.event() == ("sync.finished", {"device": "office", "status": "ok"})
+    core.hub.publish({"type": "sync.finished", "device": "office", "status": "ok", "added": 2, "missing": 0})
+    assert await s.event() == ("sync.finished", {"device": "office", "status": "ok", "added": 2, "missing": 0})
     await s.close()
 
 
@@ -617,8 +617,9 @@ async def test_sse_events_are_mapped_and_filtered(core: Core) -> None:
     core.hub.publish({"type": "mystery", "device": "office", "secret": "/media/fat/x"})
     core.hub.publish({"type": "sync.started", "device": "office"})
     core.hub.publish({"type": "sync.finished", "device": "office", "status": "ok", "error": "/media/fat/x"})
-    assert await s.event() == ("sync.started", {"device": "office", "status": None})
-    assert await s.event() == ("sync.finished", {"device": "office", "status": "ok"})
+    assert await s.event() == ("sync.started", {"device": "office", "status": None, "added": None, "missing": None})
+    # Only the whitelisted fields reach the browser; the stray "error" is dropped, absent counts are None.
+    assert await s.event() == ("sync.finished", {"device": "office", "status": "ok", "added": None, "missing": None})
     await s.close()
 
 

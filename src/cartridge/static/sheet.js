@@ -3,8 +3,7 @@
 import { ApiFailure, del, getJSON, newRequestId, postJSON } from "./api.js";
 import { bus, confirmSheet, el, emit, openSheet, toast } from "./dom.js";
 import { deviceByName, getSelected, stateText } from "./devices.js";
-
-const REASONS = { not_on_device: "not on this device", core_missing: "core not installed" };
+import { REASONS } from "./grid.js";
 
 const ui = {};
 let remote = false;
@@ -85,9 +84,15 @@ function render() {
   ui.star.setAttribute("aria-pressed", String(game.favorite));
   ui.star.textContent = game.favorite ? "★ Favorite" : "☆ Add to favorites";
   const device = getSelected();
-  ui.play.textContent = device ? `Play on ${device.label}` : "Play";
   const why = blocker(game);
-  ui.play.disabled = Boolean(why) || busy;
+  if (busy && device) {
+    ui.play.textContent = `Starting on ${device.label}…`;
+    ui.play.disabled = true;
+    ui.reason.textContent = `Starting on ${device.label}…`;
+    return;
+  }
+  ui.play.textContent = device ? `Play on ${device.label}` : "Play";
+  ui.play.disabled = Boolean(why);
   ui.reason.textContent = why ?? "";
 }
 

@@ -2,12 +2,13 @@
 
 import { getJSON } from "./api.js";
 import { bus, clear, el } from "./dom.js";
-import { deviceByName, getDevices, getSelected, syncNow } from "./devices.js";
+import { getDevices, getSelected, syncNow } from "./devices.js";
 
 const PAGE_SIZE = 120;
+const MAX_LIMIT = 500; // the server caps a page here
 const SEARCH_DELAY_MS = 250;
 const README_URL = "https://github.com/SDNick484/cartridge#readme";
-const REASONS = { not_on_device: "not on this device", core_missing: "core not installed" };
+export const REASONS = { not_on_device: "not on this device", core_missing: "core not installed" };
 
 const ui = {};
 let remote = false;
@@ -48,12 +49,15 @@ export function initGrid(elements, { isRemote, hasSynced, open }) {
     reload();
   });
   bus.addEventListener("devices-changed", renderToggle);
-  bus.addEventListener("favorite-changed", () => view === "favorites" && reload());
+  bus.addEventListener("favorite-changed", () => view === "favorites" && refresh());
   renderToggle();
 }
 
+/** Returns true when the catalog went from never-synced to synced (the empty state is stale). */
 export function setSynced(value) {
+  const flipped = value && !synced;
   synced = value;
+  return flipped;
 }
 
 export async function loadChips() {
@@ -109,8 +113,8 @@ export function reload() {
   loadMore();
 }
 
-function gamesPath() {
-  const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(count) });
+function gamesPath(offset, limit) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (view.startsWith("system:")) params.set("system", view.slice("system:".length));
   if (view === "favorites") params.set("favorites", "1");
   if (query) params.set("q", query);
@@ -137,6 +141,46 @@ async function recentGames() {
   return games.filter((g) => g && g.title.toLowerCase().includes(needle));
 }
 
+/**
+ * Re-reads what is already on screen (at least one page) and swaps it in place, so a live update keeps the
+ * scroll position and puts focus back on the same tile, or the one now at its position.
+ */
+export async function refresh() {
+  generation += 1;
+  const mine = generation;
+  loading = false;
+  let games;
+  let all;
+  try {
+    if (view === "recent") {
+      games = await recentGames();
+      all = games.length;
+    } else {
+      const page = await getJSON(gamesPath(0, Math.min(Math.max(count, PAGE_SIZE), MAX_LIMIT)));
+      games = page.games;
+      all = page.total;
+    }
+  } catch {
+    return; // keep what is shown; the next event or reload tries again
+  }
+  if (mine !== generation) return;
+  const focused = document.activeElement;
+  const tiles = [...ui.grid.children];
+  const focusId = tiles.includes(focused) ? focused.dataset.id : null;
+  const focusAt = tiles.indexOf(focused);
+  ui.grid.replaceChildren(...games.map(tile));
+  count = games.length;
+  total = all;
+  ui.empty.hidden = true;
+  if (count === 0) showEmpty();
+  if (focusId !== null && count > 0) {
+    const same = [...ui.grid.children].find((t) => t.dataset.id === focusId);
+    (same ?? ui.grid.children[Math.min(focusAt, count - 1)]).focus();
+  }
+  observer.unobserve(ui.sentinel);
+  observer.observe(ui.sentinel);
+}
+
 async function loadMore() {
   if (loading || (total !== null && count >= total)) return;
   loading = true;
@@ -147,7 +191,7 @@ async function loadMore() {
       games = await recentGames();
       total = games.length;
     } else {
-      const page = await getJSON(gamesPath());
+      const page = await getJSON(gamesPath(count, PAGE_SIZE));
       games = page.games;
       total = page.total;
     }
@@ -227,6 +271,6 @@ function syncButton(device) {
     type: "button",
     class: "btn primary",
     text: many ? `Sync ${device.label}` : "Sync now",
-    on: { click: (event) => syncNow(deviceByName(device.name), event.currentTarget) },
+    on: { click: () => syncNow(device) },
   });
 }

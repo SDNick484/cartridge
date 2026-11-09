@@ -36,6 +36,7 @@ jobs:
   # Browser smoke tests: Chromium drives the UI against `cartridge simulate`.
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -43,7 +44,13 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: python -m playwright install --with-deps chromium
-      - run: python -m pytest -m e2e
+      - run: python -m pytest -m e2e --basetemp=e2e-tmp
+      - name: Upload simulator logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-simulator-logs
+          path: e2e-tmp/**/server.log
 
   # The files shared with the sibling servers (shared.lock, scripts/sync_shared.py) must
   # match mcp-server-shared, the source of truth. On pushes and PRs: at the locked commit,

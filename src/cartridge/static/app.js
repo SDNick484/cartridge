@@ -1,10 +1,10 @@
 // Entry point: wires the modules together and keeps them current from the SSE stream.
 
 import { events, getJSON } from "./api.js";
-import { registerSheet } from "./dom.js";
+import { registerSheet, toast } from "./dom.js";
 import { initDevices, setDevices, updateDevice } from "./devices.js";
 import { initFocus } from "./focus.js";
-import { initGrid, loadChips, reload, setSynced } from "./grid.js";
+import { initGrid, loadChips, refresh, reload, setSynced } from "./grid.js";
 import { initSheet, openGame } from "./sheet.js";
 
 const $ = (id) => document.getElementById(id);
@@ -13,7 +13,9 @@ async function loadConfig() {
   try {
     return await getJSON("/api/config");
   } catch {
-    return { mode: "lan", synced: true };
+    // Without a config we can't tell which app this is, so assume the safe one: browse only, no launching.
+    toast("Couldn't reach Cartridge, so launching is turned off. Reload to try again.");
+    return { mode: "remote", synced: true };
   }
 }
 
@@ -25,15 +27,18 @@ async function refreshDevices() {
   }
 }
 
-async function refreshSynced() {
-  const config = await loadConfig();
-  setSynced(Boolean(config.synced));
+/** True when the catalog just went from never-synced to synced. */
+async function syncedFlipped() {
+  try {
+    return setSynced(Boolean((await getJSON("/api/config")).synced));
+  } catch {
+    return false;
+  }
 }
 
 async function main() {
   const config = await loadConfig();
   const isRemote = config.mode === "remote";
-  document.body.classList.toggle("remote", isRemote);
 
   initFocus($("tv-toggle"));
   for (const dialog of document.querySelectorAll("dialog")) {
@@ -77,17 +82,20 @@ async function main() {
 
   let wasDown = false;
   events(
-    (type, data) => {
+    async (type, data) => {
       if (type === "hello") {
         setDevices(data);
-        if (wasDown) refreshSynced().then(reload);
+        // After a reconnect the grid stays put unless the empty "never synced" state became stale.
+        if (wasDown && (await syncedFlipped())) reload();
         wasDown = false;
       } else if (type === "device") {
         updateDevice(data);
       } else {
-        // sync.started / sync.finished: the device card's sync state changed; a finished run may add games.
+        // sync.started / sync.finished: the device card's sync state changed.
         refreshDevices();
-        if (type === "sync.finished") refreshSynced().then(reload);
+        if (type !== "sync.finished") return;
+        if (await syncedFlipped()) reload();
+        else if (data.added > 0 || data.missing > 0) refresh(); // only a visible change touches the grid
       }
     },
     (up) => {

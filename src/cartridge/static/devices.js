@@ -94,10 +94,20 @@ function render() {
     pill.append(el("span", { class: "pill-label", text: "Choose a device" }));
   }
   pill.setAttribute("aria-label", device ? `Device: ${device.label}, ${stateText(device)}` : "Choose a device");
-  if (list) {
-    list.replaceChildren(...devices.map(card));
-    if (devices.length === 0) list.append(el("p", { class: "muted", text: "No devices are configured yet." }));
-  }
+  if (list) renderList();
+}
+
+/** Rebuilds the cards, then puts focus back on the same device's same control so a live update never drops it. */
+function renderList() {
+  const active = document.activeElement;
+  const owner = list.contains(active) ? active.closest(".device-card") : null;
+  const keep = owner ? { device: owner.dataset.device, role: active.dataset.role } : null;
+  list.replaceChildren(...devices.map(card));
+  if (devices.length === 0) list.append(el("p", { class: "muted", text: "No devices are configured yet." }));
+  if (!keep) return;
+  const mine = [...list.children].find((c) => c.dataset.device === keep.device);
+  const same = mine && [...mine.querySelectorAll("[data-role]")].find((b) => b.dataset.role === keep.role);
+  (same ?? mine?.querySelector("button"))?.focus();
 }
 
 function when(iso) {
@@ -115,6 +125,7 @@ function syncLine(sync) {
 
 function card(device) {
   const isSelected = device.name === selected;
+  const running = Boolean(device.sync?.running);
   const lines = [];
   if (device.message) lines.push(el("p", { class: "device-message", text: device.message }));
   if (device.now_playing) lines.push(el("p", { text: `Now playing: ${device.now_playing.title}` }));
@@ -126,7 +137,13 @@ function card(device) {
   const actions = [
     isSelected
       ? el("span", { class: "badge", text: "Selected" })
-      : el("button", { type: "button", class: "btn primary", text: `Use ${device.label}`, on: { click: () => pick(device) } }),
+      : el("button", {
+          type: "button",
+          class: "btn primary",
+          text: `Use ${device.label}`,
+          dataset: { role: "use" },
+          on: { click: () => pick(device) },
+        }),
   ];
   if (!remote) {
     actions.push(
@@ -134,15 +151,18 @@ function card(device) {
         type: "button",
         class: "btn",
         text: "Return to menu",
+        dataset: { role: "menu" },
         disabled: device.state !== "online",
         on: { click: () => returnToMenu(device) },
       }),
+      // aria-disabled, not disabled: a disabled button can't keep focus while its sync runs.
       el("button", {
         type: "button",
         class: "btn",
-        text: "Sync now",
-        disabled: Boolean(device.sync?.running),
-        on: { click: (event) => syncNow(device, event.currentTarget) },
+        text: running ? "Syncing…" : "Sync now",
+        dataset: { role: "sync" },
+        "aria-disabled": running ? "true" : null,
+        on: { click: () => !running && syncNow(device) },
       }),
     );
   }
@@ -175,13 +195,11 @@ async function returnToMenu(device) {
   }
 }
 
-export async function syncNow(device, button = null) {
-  if (button) button.disabled = true;
+export async function syncNow(device) {
   try {
     await postJSON(`/api/devices/${encodeURIComponent(device.name)}/sync`);
     toast(`Syncing ${device.label}…`);
   } catch (error) {
     toast(error instanceof ApiFailure ? error.message : "That didn't work; try again.");
-    if (button) button.disabled = false;
   }
 }

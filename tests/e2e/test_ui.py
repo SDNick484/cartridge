@@ -142,3 +142,61 @@ def test_storage_blocked(server: str, open_page: OpenPage) -> None:
     expect(tiles(page).first).to_be_visible()
     pick_device(page, "Family Room")
     no_console_problems(page)
+
+
+WATCH_SYNC = """
+  window.__finished = [];
+  window.__ready = false;
+  const es = new EventSource('/api/events');
+  es.addEventListener('hello', () => { window.__ready = true; });
+  es.addEventListener('sync.finished', (e) => window.__finished.push(e.data));
+"""
+
+
+def watch_sync(page: Page) -> None:
+    """Records sync.finished frames; waits for the stream so a fast sync can't finish before it listens."""
+    page.evaluate(WATCH_SYNC)
+    page.wait_for_function("() => window.__ready")
+
+
+def request_sync(page: Page, base: str, device: str) -> None:
+    r = page.request.post(
+        f"{base}/api/devices/{device}/sync",
+        headers={"Content-Type": "application/json", "X-Cartridge": "1"},
+        data="{}",
+    )
+    assert r.status == 202
+
+
+def test_sync_finished_keeps_tv_focus(fresh_server: str, open_page: OpenPage) -> None:
+    page = open_page(fresh_server + "/?tv=1", 1920, 1080)
+    expect(tiles(page).first).to_be_visible()
+    for _ in range(30):
+        page.keyboard.press("Tab")
+        if page.evaluate("document.activeElement.classList.contains('tile')"):
+            break
+    page.keyboard.press("ArrowRight")
+    focused = page.evaluate("document.activeElement.dataset.id")
+    assert focused
+    watch_sync(page)
+    request_sync(page, fresh_server, "family-room")
+    page.wait_for_function("() => window.__finished.length > 0")
+    assert '"added":0' in page.evaluate("window.__finished[0]")
+    page.wait_for_timeout(500)  # let the app's own handler run
+    assert page.evaluate("document.activeElement.dataset.id") == focused
+    no_console_problems(page)
+
+
+def test_sync_now_keeps_focus_in_device_sheet(fresh_server: str, open_page: OpenPage) -> None:
+    page = open_page(fresh_server)
+    expect(tiles(page).first).to_be_visible()
+    watch_sync(page)
+    page.locator("#device-pill").click()
+    sync = page.locator('.device-card[data-device="family-room"] [data-role="sync"]')
+    sync.click()
+    page.wait_for_function("() => window.__finished.length > 0")
+    page.wait_for_timeout(500)
+    assert page.evaluate("document.activeElement.closest('#device-sheet') !== null")
+    assert page.evaluate("document.activeElement.tagName") == "BUTTON"
+    expect(sync).to_be_focused()
+    no_console_problems(page)

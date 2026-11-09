@@ -59,6 +59,8 @@ class DeviceDTO(TypedDict):
 class SyncEventDTO(TypedDict):
     device: str
     status: str | None
+    added: int | None  # games new in a finished run; None for started or interrupted runs
+    missing: int | None
 
 
 class SystemDTO(TypedDict):
@@ -188,4 +190,14 @@ def config_dto(core: Core, mode: Mode) -> ConfigDTO:
 
 def sync_event_dto(event: dict[str, object]) -> SyncEventDTO:
     status = event.get("status")
-    return SyncEventDTO(device=str(event.get("device")), status=status if isinstance(status, str) else None)
+
+    def count(key: str) -> int | None:
+        value = event.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    return SyncEventDTO(
+        device=str(event.get("device")),
+        status=status if isinstance(status, str) else None,
+        added=count("added"),
+        missing=count("missing"),
+    )
