@@ -108,6 +108,8 @@ async def test_coming_back_online_ingests_history_without_a_sync(sim: Simulation
 
 async def test_device_events_are_published_once(sim: Simulation, running: Core) -> None:
     await settled(running, 2)
+    target_events: list[str] = []
+    running.registry.subscribe(lambda e: target_events.append(e.device))
     seen: list[dict[str, object]] = []
 
     async def collect() -> None:
@@ -119,12 +121,31 @@ async def test_device_events_are_published_once(sim: Simulation, running: Core) 
     await wait_for(lambda: running.hub.client_count("lan") == 1)
     fake = family(sim).fake
     await fake.play(fake.media[0]["mediaId"])
-    await wait_for(lambda: {"type": "device", "device": "family-room"} in seen)
-    await asyncio.sleep(0.1)
-    # started + one status refresh at most; a double subscription would double every count
-    assert 1 <= seen.count({"type": "device", "device": "family-room"}) <= 2
+    await wait_for(lambda: "family-room" in target_events)
+    await asyncio.sleep(0.2)
+    # One hub event per target event: a second subscription would double every count.
+    published = [e for e in seen if e == {"type": "device", "device": "family-room"}]
+    assert len(published) == target_events.count("family-room") >= 1
     running.hub.close()
     await task
+
+
+async def test_failed_first_sync_is_retried_on_reconnect(sim: Simulation, tmp_path: Path) -> None:
+    fake = family(sim).fake
+    fake.close_after = "media.search"
+    core = await build(sim, tmp_path)
+    try:
+        Background(core, interval=3600).start()
+
+        def family_failed() -> bool:
+            state = core.catalog.sync_state("family-room")
+            return state is not None and state.status == "failed"
+
+        await wait_for(family_failed)
+        fake.close_after = None
+        await wait_for(lambda: (s := core.catalog.sync_state("family-room")) is not None and s.status == "ok")
+    finally:
+        await close_core(core)
 
 
 async def test_periodic_sync_covers_online_devices(sim: Simulation, tmp_path: Path) -> None:

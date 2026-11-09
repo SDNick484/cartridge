@@ -24,7 +24,7 @@ from starlette.types import ASGIApp
 from cartridge import __version__
 from cartridge.access import AccessVerifier, policy_from_settings
 from cartridge.config import LOG_LEVELS, Devices, Settings, load_devices, load_settings
-from cartridge.core import Background, build_core, close_core, database_path, open_database
+from cartridge.core import Background, build_core, close_core, database_path
 from cartridge.errors import ConfigError
 from cartridge.logsafe import setup_logging
 from cartridge.registry import DeviceRegistry
@@ -65,9 +65,35 @@ def _load(env: Mapping[str, str]) -> tuple[Settings, Devices]:
     return settings, load_devices(settings.devices_file)
 
 
-def _db_advice(settings: Settings, why: object) -> str:
+def _db_advice(settings: Settings, why: Exception) -> str:
     path = database_path(settings)
+    unopenable = isinstance(why, sqlite3.OperationalError) and ("unable to open" in str(why) or "readonly" in str(why))
+    if isinstance(why, OSError) or unopenable:
+        return f"Can't use {settings.data_dir} ({why}): check that it exists and is writable by the service user."
     return f"The database can't be used ({why}): delete or restore {path}; Cartridge rebuilds it on the next sync."
+
+
+def _check_database(settings: Settings) -> bool:
+    """Read-only: `check` must not create or migrate anything (it may run as a different user than the service)."""
+    path = database_path(settings)
+    if not path.exists():
+        print("database: no database yet; it is created on the first serve or sync")
+        return True
+    try:
+        # With no WAL file nothing is pending, and immutable stops SQLite creating -wal/-shm files for the reader.
+        mode = "mode=ro" if path.with_name(path.name + "-wal").exists() else "mode=ro&immutable=1"
+        conn = sqlite3.connect(f"{path.as_uri()}?{mode}", uri=True)
+        try:
+            verdict = conn.execute("PRAGMA quick_check").fetchone()
+        finally:
+            conn.close()
+        if verdict is None or verdict[0] != "ok":
+            raise sqlite3.DatabaseError("its integrity check failed")
+    except (sqlite3.Error, OSError) as exc:
+        print(_db_advice(settings, exc))
+        return False
+    print("database: ok")
+    return True
 
 
 async def _settle(registry: DeviceRegistry) -> None:
@@ -90,46 +116,50 @@ async def _serve(env: Mapping[str, str]) -> int:
     except (sqlite3.Error, OSError) as exc:
         print(_db_advice(settings, exc), file=sys.stderr)
         return 1
-    Background(core).start()
-    hosts = settings.lan_hosts or default_lan_hosts(settings.lan_bind[0])
-    apps: list[tuple[ASGIApp, tuple[str, int]]] = [(build_lan_app(core, hosts), settings.lan_bind)]
-    if verifier is not None:
-        apps.append((build_remote_app(core, verifier), settings.remote_bind))
-    servers = [
-        _Server(
-            uvicorn.Config(
-                app,
-                host=host,
-                port=port,
-                lifespan="off",
-                log_config=None,
-                access_log=False,
-                timeout_graceful_shutdown=5,
+    try:
+        Background(core).start()
+        hosts = settings.lan_hosts or default_lan_hosts(settings.lan_bind[0])
+        apps: list[tuple[ASGIApp, tuple[str, int]]] = [(build_lan_app(core, hosts), settings.lan_bind)]
+        if verifier is not None:
+            apps.append((build_remote_app(core, verifier), settings.remote_bind))
+        servers = [
+            _Server(
+                uvicorn.Config(
+                    app,
+                    host=host,
+                    port=port,
+                    lifespan="off",
+                    log_config=None,
+                    access_log=False,
+                    timeout_graceful_shutdown=5,
+                )
             )
-        )
-        for app, (host, port) in apps
-    ]
-    stop = _stop_event()
-    failed = False
+            for app, (host, port) in apps
+        ]
+        stop = _stop_event()
+        failed = False
 
-    async def run(server: _Server) -> None:
-        nonlocal failed
-        try:
-            await server.serve()
-        except SystemExit:  # uvicorn exits instead of raising when it can't bind
-            log.error("Could not listen on %s:%s; is the port already in use?", server.config.host, server.config.port)
-            failed = True
-        stop.set()
+        async def run(server: _Server) -> None:
+            nonlocal failed
+            try:
+                await server.serve()
+            except SystemExit:  # uvicorn exits instead of raising when it can't bind
+                log.error(
+                    "Could not listen on %s:%s; is the port already in use?", server.config.host, server.config.port
+                )
+                failed = True
+            stop.set()
 
-    runs = [asyncio.create_task(run(s)) for s in servers]
-    log.info("Cartridge %s listening on %s.", __version__, ", ".join(f"{h}:{p}" for _, (h, p) in apps))
-    await stop.wait()
-    core.hub.close()  # first, so open SSE streams end and the servers can drain
-    for server in servers:
-        server.should_exit = True
-    await asyncio.wait(runs, timeout=SERVER_STOP_SECONDS)
-    await close_core(core)  # stops Background first
-    return 1 if failed else 0
+        runs = [asyncio.create_task(run(s)) for s in servers]
+        log.info("Cartridge %s listening on %s.", __version__, ", ".join(f"{h}:{p}" for _, (h, p) in apps))
+        await stop.wait()
+        core.hub.close()  # first, so open SSE streams end and the servers can drain
+        for server in servers:
+            server.should_exit = True
+        await asyncio.wait(runs, timeout=SERVER_STOP_SECONDS)
+        return 1 if failed else 0
+    finally:
+        await close_core(core)  # stops Background first
 
 
 def _cmd_serve(env: Mapping[str, str]) -> int:
@@ -149,33 +179,31 @@ async def _check(env: Mapping[str, str]) -> int:
     for problem in devices.problems:
         print(problem.sentence)
         ok = False
+    if settings.remote_enabled:
+        try:
+            policy_from_settings(settings)
+        except ConfigError as exc:
+            print(exc)
+            ok = False
     registry = DeviceRegistry(devices)
     await registry.start()
     try:
         await _settle(registry)
         for name in registry.names():
+            if registry.target(name) is None:
+                continue  # misconfigured: its sentence is printed above
             status = registry.status(name)
             print(f"{name}: {status.state}" + (f" - {status.message}" if status.message else ""))
             ok = ok and status.online
     finally:
         await registry.close()
-    try:
-        db = open_database(settings)
-        try:
-            healthy = db.ping()
-        finally:
-            db.close()
-        if not healthy:
-            raise sqlite3.DatabaseError("it didn't answer a query")
-        print("database: ok")
-    except (sqlite3.Error, OSError) as exc:
-        print(_db_advice(settings, exc))
-        ok = False
+    ok = _check_database(settings) and ok
     return 0 if ok else 1
 
 
 async def _sync(env: Mapping[str, str], only: str | None) -> int:
     settings, devices = _load(env)
+    print("Note: sync writes the database; run it as the service user.")
     core = await build_core(settings, devices)
     try:
         await _settle(core.registry)
@@ -198,7 +226,7 @@ async def _sync(env: Mapping[str, str], only: str | None) -> int:
         await close_core(core)
 
 
-def _run_guarded(make: Callable[[], Coroutine[Any, Any, int]], env: Mapping[str, str]) -> int:
+def _run_guarded(make: Callable[[], Coroutine[Any, Any, int]]) -> int:
     try:
         return asyncio.run(make())
     except ConfigError as exc:
@@ -261,9 +289,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "serve":
         return _cmd_serve(env)
     if command == "check":
-        return _run_guarded(lambda: _check(env), env)
+        return _run_guarded(lambda: _check(env))
     if command == "sync":
-        return _run_guarded(lambda: _sync(env, args.device), env)
+        return _run_guarded(lambda: _sync(env, args.device))
     try:
         return asyncio.run(_simulate(args.dir, args.fakes_only, args.lan_bind, env))
     except ConfigError as exc:

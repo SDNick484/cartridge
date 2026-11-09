@@ -63,12 +63,20 @@ async def core(sim: Simulation, tmp_path: Path) -> AsyncIterator[Core]:
     built = await build_core(settings, devices, http=http)
     # An interval this long never fires; the startup sync and history ingest are what the tests start from.
     Background(built, interval=86400).start()
-    for _ in range(1000):
-        states = [built.catalog.sync_state(n) for n in built.registry.names()]
-        synced = all(st is not None and st.status and not st.running for st in states)
-        if synced and built.db.recent_history(1):
+    names = built.registry.names()
+
+    def ready() -> bool:
+        states = [built.catalog.sync_state(n) for n in names]
+        synced = all(st is not None and st.status == "ok" and not st.running for st in states)
+        return synced and all(built.db.history_as_of(n) is not None for n in names)
+
+    for _ in range(2000):
+        if ready():
             break
         await asyncio.sleep(0.01)
+    else:
+        await close_core(built)
+        pytest.fail("the core fixture's startup sync and history ingest never finished")
     yield built
     await close_core(built)
 

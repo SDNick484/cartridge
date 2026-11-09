@@ -65,17 +65,30 @@ async def build_core(
     factory: TargetFactory = ZaparooTarget,
 ) -> Core:
     db = open_database(settings)
+    owned = http is None
     client = http or httpx.AsyncClient(
         headers={"User-Agent": f"cartridge/{__version__}"}, follow_redirects=False, timeout=10
     )
-    hub = EventHub()
-    registry = DeviceRegistry(devices, factory)
-    catalog = Catalog(db, registry, hub)
-    art = ArtCache(
-        db, registry, catalog, settings.data_dir / "art", http=client, online=settings.art_online, version=__version__
-    )
-    core = Core(settings, db, registry, catalog, art, hub, LaunchService(catalog, registry, db, hub), http=client)
-    await registry.start()
+    try:
+        hub = EventHub()
+        registry = DeviceRegistry(devices, factory)
+        catalog = Catalog(db, registry, hub)
+        art = ArtCache(
+            db,
+            registry,
+            catalog,
+            settings.data_dir / "art",
+            http=client,
+            online=settings.art_online,
+            version=__version__,
+        )
+        core = Core(settings, db, registry, catalog, art, hub, LaunchService(catalog, registry, db, hub), http=client)
+        await registry.start()
+    except BaseException:
+        db.close()
+        if owned:
+            await client.aclose()
+        raise
     return core
 
 
@@ -145,11 +158,12 @@ class Background:
         if name in self._seen:
             self._spawn(self._ingest(name), f"history of {name}")
         else:
-            self._seen.add(name)
             self._spawn(self._first_online(name), f"startup sync of {name}")
 
     async def _first_online(self, name: str) -> None:
         ok = await self._sync(name)
+        if ok:
+            self._seen.add(name)  # a failed first sync is retried on the next online transition
         await self._ingest(name)
         if ok:
             await self._prefetch(name)

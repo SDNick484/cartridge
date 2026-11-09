@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from cartridge.cli import main
+from cartridge.db import Database
 from cartridge.sim.harness import Simulation
 
 pytestmark = pytest.mark.anyio
@@ -83,11 +84,46 @@ async def test_check_reports_problem_and_online_devices(sim: Simulation, tmp_pat
     assert "family-room: online" in out and "office: online" in out
 
 
+async def test_check_reports_bad_access_settings_like_serve(sim: Simulation, tmp_path: Path) -> None:
+    path = sim.write_devices(tmp_path / "devices.yaml")
+    env = cli_env(
+        tmp_path,
+        REMOTE_ENABLED="1",
+        CF_ACCESS_TEAM_DOMAIN="https://x.example.com/foo",
+        CF_ACCESS_AUD="aud",
+        DEVICES_FILE=str(path),
+    )
+    code, out, _ = await run_cli("check", env=env)
+    assert code == 1 and "CF_ACCESS_TEAM_DOMAIN must be a hostname" in out
+    code, _, err = await run_cli("serve", env=env)
+    assert code == 2 and "CF_ACCESS_TEAM_DOMAIN must be a hostname" in err
+
+
+async def test_check_creates_nothing_without_a_database(sim: Simulation, tmp_path: Path) -> None:
+    path = sim.write_devices(tmp_path / "devices.yaml")
+    code, out, _ = await run_cli("check", env=cli_env(tmp_path, REMOTE_ENABLED="0", DEVICES_FILE=str(path)))
+    assert code == 0, out
+    assert "no database yet" in out
+    assert not (tmp_path / "data").exists()
+
+
+async def test_check_leaves_an_existing_database_untouched(sim: Simulation, tmp_path: Path) -> None:
+    path = sim.write_devices(tmp_path / "devices.yaml")
+    db = Database.open(tmp_path / "data" / "cartridge.db")
+    db.close()
+    db_file = tmp_path / "data" / "cartridge.db"
+    before = (db_file.stat().st_mtime_ns, db_file.read_bytes(), sorted(p.name for p in db_file.parent.iterdir()))
+    code, out, _ = await run_cli("check", env=cli_env(tmp_path, REMOTE_ENABLED="0", DEVICES_FILE=str(path)))
+    assert code == 0 and "database: ok" in out
+    after = (db_file.stat().st_mtime_ns, db_file.read_bytes(), sorted(p.name for p in db_file.parent.iterdir()))
+    assert after == before
+
+
 async def test_check_passes_when_everything_is_fine(sim: Simulation, tmp_path: Path) -> None:
     path = sim.write_devices(tmp_path / "devices.yaml")
     code, out, _ = await run_cli("check", env=cli_env(tmp_path, REMOTE_ENABLED="0", DEVICES_FILE=str(path)))
     assert code == 0, out
-    assert "database: ok" in out
+    assert "no database yet" in out
 
 
 async def test_check_says_what_to_do_about_a_corrupt_database(sim: Simulation, tmp_path: Path) -> None:
