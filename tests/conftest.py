@@ -62,13 +62,16 @@ async def core(sim: Simulation, tmp_path: Path) -> AsyncIterator[Core]:
     http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
     built = await build_core(settings, devices, http=http)
     # An interval this long never fires; the startup sync and history ingest are what the tests start from.
-    Background(built, interval=86400).start()
+    background = Background(built, interval=86400)
+    background.start()
     names = built.registry.names()
 
     def ready() -> bool:
         states = [built.catalog.sync_state(n) for n in names]
         synced = all(st is not None and st.status == "ok" and not st.running for st in states)
-        return synced and all(built.db.history_as_of(n) is not None for n in names)
+        ingested = all(built.db.history_as_of(n) is not None for n in names)
+        # Only the periodic loop is left: the startup art prefetch has finished too, so it can't race a test.
+        return synced and ingested and len(background._tasks) == 1
 
     for _ in range(2000):
         if ready():
