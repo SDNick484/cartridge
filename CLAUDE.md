@@ -21,12 +21,15 @@ Zaparoo Core, shows it as a cover-art grid, and launches games on a chosen devic
 - `launch.py`: launch validation order and rate limits.
 - `access.py`: Cloudflare Access JWT verification for the remote app.
 - `core.py`: composes the core and runs background loops (syncs, history ingest, event fan-out).
-- `cli.py`: `cartridge serve | simulate | check`.
+- `cli.py`: `cartridge serve | check | sync | simulate`.
 - `targets/`: `base.py` (`LaunchTarget`), `zaparoo.py` (the Zaparoo target).
-- `web/`: `common.py` (DTOs, shared helpers), `lan.py`, `remote.py`.
+- `web/`: `common.py` (shared routes and helpers), `dto.py` (the TypedDict DTOs), `lan.py`, `remote.py`.
 - `sim/`: `fake_zaparoo.py`, `harness.py`, `fixtures/*.json` (hardware-free simulator).
-- `static/`: browser UI (plain ES modules, no build step) and the bundled font.
+- `static/`: browser UI (plain ES modules, no build step; `dom.js` DOM helpers, `sheet.js` launch sheet) and the bundled font.
 - `logsafe.py`, `tasks.py`, `ratelimit.py`: synced from mcp-server-shared, never edited.
+
+Outside `src/`: `tests/helpers.py` (shared test helpers), `tests/e2e/` (Playwright, run with `-m e2e`), `deploy/alpine/`
+(install, OpenRC service, smoke test), `HARDWARE_VALIDATION.md`.
 
 ## Guardrails
 
@@ -36,9 +39,12 @@ Zaparoo Core, shows it as a cover-art grid, and launches games on a chosen devic
 - Launch validation follows the order in spec 7.3, with zero device calls on rejection.
 - Zaparoo allow-list is exactly `version, media, media.search, media.meta, media.image, media.active, media.history,
   systems, launchers, run, stop`. `test_safety` pins it; widening it is a spec change. Never `unsafe` or `media.generate`.
-- The remote app has no write routes and fails closed on Access.
+- The remote app has no write routes and fails closed on Access (spec 9.4): it refuses to start when
+  `REMOTE_ENABLED=1` without `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD`, and `/healthz` is answered before auth.
+- Rate limits (spec 9.6): launch and menu share a per-device bucket (burst 4, 1 per 15 s); sync is once a minute with
+  one in flight per device; at most 50 SSE clients per app.
 - The LAN app refuses proxied requests, enforces the Host allow-list and the write guards, and never sends CORS headers.
-- Strict CSP: no inline script, no CDNs.
+- Strict CSP, exactly `default-src 'self'; img-src 'self' data:; connect-src 'self'`: no inline script, no CDNs.
 - Log to stderr via `logsafe`; never log request bodies.
 - Shared files (`logsafe`, `tasks`, `ratelimit`, their tests, `scripts/sync_shared.py`, `shared.lock`) are synced,
   never hand-edited: `python scripts/sync_shared.py --update`. CI job `shared-drift` enforces it.
@@ -48,6 +54,10 @@ Zaparoo Core, shows it as a cover-art grid, and launches games on a chosen devic
   and `office`.
 - No `media.generate`, no API key; Zaparoo legacy access only.
 - Errors reach the UI as `{"code": str, "message": str}` with a message a person can act on.
+
+## Status
+
+v1 is complete and verified against the simulator only; `HARDWARE_VALIDATION.md` is the checklist for real MiSTers.
 
 ## Verification gate
 

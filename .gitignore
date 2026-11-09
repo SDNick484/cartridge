@@ -6,3 +6,4 @@ __pycache__/
 .ruff_cache/
 /sim-data/
 e2e-tmp/
+build/

@@ -1,0 +1,29 @@
+# /etc/conf.d/cartridge: read by run.sh (root:cartridge, mode 0640).
+# Plain KEY=value lines (shell syntax; quote values with spaces). run.sh exports every variable.
+# After changing it: rc-service cartridge restart
+
+# --- LAN app (full UI, unauthenticated by design) ----------------------------------------
+# Reachable by anyone on your network. Never point a tunnel at this port.
+LAN_BIND=0.0.0.0:8770
+# Host names the LAN app answers to (DNS-rebinding guard). With a wildcard bind the default
+# already includes this machine's addresses and hostname. Set it when you reach the app by
+# another name, e.g. a DNS alias or a reverse proxy name on the LAN.
+#LAN_HOSTS=cartridge.lan,192.0.2.20
+
+# --- Remote app (read-only, behind Cloudflare Access) -------------------------------------
+# Off until you set up Access. With REMOTE_ENABLED=1 the app refuses to start unless both
+# CF_ACCESS_* values are set (README, "cloudflared and Access").
+REMOTE_ENABLED=0
+#REMOTE_BIND=127.0.0.1:8771
+#CF_ACCESS_TEAM_DOMAIN=example.cloudflareaccess.com
+#CF_ACCESS_AUD=<the Access application's AUD tag>
+# Only these identities, on top of whatever the Access policy admits.
+#REMOTE_ALLOWED_EMAILS=you@example.com
+
+# --- Data ---------------------------------------------------------------------------------
+#DATA_DIR=/var/lib/cartridge
+#DEVICES_FILE=/etc/cartridge/devices.yaml
+# 0 = never fetch artwork from the internet (libretro-thumbnails).
+#ART_ONLINE=1
+#SYNC_INTERVAL_HOURS=6
+#LOG_LEVEL=INFO
