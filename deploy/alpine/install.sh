@@ -11,7 +11,7 @@
 #   /var/lib/cartridge/                database, artwork cache  cartridge         0700
 #   /var/log/cartridge/cartridge.log   service output           cartridge         0750 (directory)
 #   /etc/init.d/cartridge              the OpenRC script
-# Re-running upgrades the code and keeps settings, devices and data.
+# Re-running upgrades the code and keeps settings, devices and data; then rc-service cartridge restart.
 set -eu
 
 SRC="${1:?usage: install.sh SOURCE (a checkout directory or a pip spec)}"
@@ -44,7 +44,7 @@ install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$STATE"
 install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" /var/log/cartridge
 install -m 0755 "$HERE/cartridge.initd" /etc/init.d/cartridge
 
-echo "Installed Cartridge."
+echo "Installed Cartridge. If it is already running, upgrade it with: rc-service cartridge restart"
 echo "Next:"
 echo "  1. Edit $ETC/devices.yaml (your MiSTers) and /etc/conf.d/cartridge."
 echo "  2. Check, as the service user:  su -s /bin/sh $USER_NAME -c '$PREFIX/run.sh check'"

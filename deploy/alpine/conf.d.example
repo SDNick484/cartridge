@@ -16,7 +16,7 @@ LAN_BIND=0.0.0.0:8770
 REMOTE_ENABLED=0
 #REMOTE_BIND=127.0.0.1:8771
 #CF_ACCESS_TEAM_DOMAIN=example.cloudflareaccess.com
-#CF_ACCESS_AUD=<the Access application's AUD tag>
+#CF_ACCESS_AUD="your-aud-tag"   # the Access application's AUD tag
 # Only these identities, on top of whatever the Access policy admits.
 #REMOTE_ALLOWED_EMAILS=you@example.com
 

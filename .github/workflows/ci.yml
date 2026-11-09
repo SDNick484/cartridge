@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - run: docker run --rm -v "$PWD:/src" -w /src python:3.12-alpine sh deploy/alpine/smoke-test.sh
+      - run: docker run --rm -v "$PWD:/src:ro" python:3.12-alpine sh /src/deploy/alpine/smoke-test.sh
 
   # The files shared with the sibling servers (shared.lock, scripts/sync_shared.py) must
   # match mcp-server-shared, the source of truth. On pushes and PRs: at the locked commit,

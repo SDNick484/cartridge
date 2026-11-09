@@ -67,7 +67,7 @@ git clone https://github.com/SDNick484/cartridge && cd cartridge
 sh deploy/alpine/install.sh "$PWD"
 ```
 
-`install.sh` is idempotent. It installs `python3` and `py3-pip`, creates the `cartridge` user, builds a virtualenv in `/opt/cartridge/venv`, and installs the OpenRC service. Re-running it upgrades the code and keeps your settings, devices and data. It never overwrites an existing `/etc/conf.d/cartridge` or `/etc/cartridge/devices.yaml`.
+`install.sh` is idempotent. It installs `python3` and `py3-pip`, creates the `cartridge` user, builds a virtualenv in `/opt/cartridge/venv`, and installs the OpenRC service. Re-running it upgrades the code and keeps your settings, devices and data; after an upgrade run `rc-service cartridge restart`. It never overwrites an existing `/etc/conf.d/cartridge` or `/etc/cartridge/devices.yaml`.
 
 | Path | What | Owner and mode |
 |---|---|---|
@@ -97,11 +97,11 @@ The remote app is read-only and meant to sit behind Cloudflare Access. Skip this
    ```sh
    REMOTE_ENABLED=1
    CF_ACCESS_TEAM_DOMAIN=example.cloudflareaccess.com
-   CF_ACCESS_AUD=<the Access application's AUD tag>
+   CF_ACCESS_AUD="your-aud-tag"        # the Access application's AUD tag
    REMOTE_ALLOWED_EMAILS=you@example.com    # optional: only these, on top of the policy
    ```
 
-   The remote app refuses to start if `REMOTE_ENABLED=1` and either `CF_ACCESS_*` value is missing. It checks the Access assertion itself (signature, audience, issuer, expiry and the email list), not only at Cloudflare's edge. Only `/healthz` is answered without one, and it returns no data.
+   Cartridge refuses to start (the whole service exits, LAN app included) if `REMOTE_ENABLED=1` and either `CF_ACCESS_*` value is missing. It checks the Access assertion itself (signature, audience, issuer, expiry and the email list), not only at Cloudflare's edge. Only `/healthz` is answered without one, and it returns no data.
 3. Point cloudflared at the **remote** port:
 
    ```yaml
@@ -156,11 +156,11 @@ Run `cartridge check` first. It is read-only: it validates `devices.yaml` and th
 |---|---|
 | A card says "offline" or "No answer from Office: is it on and on the network?" | The MiSTer is off or unreachable. Its games stay browsable from cache, but Play is disabled. Check the `host` and `port` in `devices.yaml` and that you can open `http://<mister-ip>:7497/app/`. |
 | "Connection refused", or a sentence pointing here | Zaparoo Core isn't installed or isn't running on that MiSTer. Follow [Install Zaparoo Core on a MiSTer](#install-zaparoo-core-on-a-mister). |
-| "needs pairing (Zaparoo encryption is on)" | Core is set to require encryption, which Cartridge doesn't support yet (`auth: paired` comes later). On the MiSTer, set `encryption = false` in Zaparoo Core's configuration file (`config.toml`, in the API section if it has one), then restart Zaparoo Core. Pairing from Cartridge isn't available yet. |
+| The card shows **Needs pairing**, with "<Device> needs pairing: Zaparoo's encryption is on and Cartridge can't pair yet. Turn encryption off in Zaparoo's config (see the README)." | Core requires encryption, which Cartridge doesn't support yet (`auth: paired` comes later). Turn it off on the MiSTer by setting `encryption = false` in Zaparoo Core's configuration, then restart Core. The exact file and section are unverified: check Zaparoo's documentation (see `Z-ENC-ERROR` below). |
 | The grid is empty and says it hasn't been indexed | Build the media database in Zaparoo's web UI (`http://<mister-ip>:7497/app/`), then press **Sync now**. |
 | A sync failed (error on the card) | The previous data is kept; nothing is marked missing from a failed run. Fix the cause (usually the device dropped off the network) and press **Sync now**, or run `cartridge sync` as the service user. Sync now is limited to once a minute per device. |
 | A cover is a generated tile | No art was found. Check `ART_ONLINE`, or put art on the share for Zaparoo to serve. Misses are retried after 7 days. |
-| The remote app answers 403 to everything but `/healthz` | The Access assertion is missing or doesn't match: check `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` and `REMOTE_ALLOWED_EMAILS`. With `REMOTE_ENABLED=1` and no Access settings the app won't start at all. |
+| The remote app answers 403 to everything but `/healthz` | The Access assertion is missing or doesn't match: check `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` and `REMOTE_ALLOWED_EMAILS`. With `REMOTE_ENABLED=1` and no Access settings Cartridge won't start at all. |
 | The LAN app answers 403 | Either the request came through a proxy or tunnel (the LAN port must never be a tunnel target), or you used a name that isn't in `LAN_HOSTS`. Add it. |
 | `/healthz` reports not ready, or `check` says the database can't be used | `check` names the file. Make sure `DATA_DIR` is writable by the service user. If the database is corrupt, delete it; Cartridge rebuilds it on the next sync (favorites are lost). |
 | The service won't start | `cat /var/log/cartridge/cartridge.log`, or run `su -s /bin/sh cartridge -c /opt/cartridge/run.sh` to see the message in the foreground. Configuration problems are printed as sentences. |

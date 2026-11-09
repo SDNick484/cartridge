@@ -92,12 +92,12 @@ Expected: the first returns base64 data and a `contentType` such as `image/png`,
 
 Claim: when Core requires encryption, it rejects plaintext requests with error code `-32002`.
 
-1. On the MiSTer, turn encryption on in Zaparoo Core's configuration and restart Core.
+1. On the MiSTer, turn encryption on in Zaparoo Core's configuration and restart Core. (Which file and setting does this is itself unverified: check Zaparoo's documentation. Record the real name in the README's troubleshooting row.)
 2. Send `{"jsonrpc":"2.0","id":"1","method":"version"}` from `websocat`.
 3. Look at the device card in Cartridge.
-4. Set `encryption = false` again and restart Core.
+4. Turn encryption off again and restart Core. Confirm that `encryption = false` is really the setting; if not, fix the README.
 
-Expected: an error response with code `-32002`; the card shows "needs pairing (Zaparoo encryption is on)", and goes back online after step 4.
+Expected: an error response with code `-32002`; the card shows the state **Needs pairing** with the message "<Device> needs pairing: Zaparoo's encryption is on and Cartridge can't pair yet. Turn encryption off in Zaparoo's config (see the README).", and goes back online after step 4.
 
 ## `L-THUMB-URL`: libretro-thumbnails URL rule
 

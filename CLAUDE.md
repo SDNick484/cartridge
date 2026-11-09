@@ -39,8 +39,8 @@ Outside `src/`: `tests/helpers.py` (shared test helpers), `tests/e2e/` (Playwrig
 - Launch validation follows the order in spec 7.3, with zero device calls on rejection.
 - Zaparoo allow-list is exactly `version, media, media.search, media.meta, media.image, media.active, media.history,
   systems, launchers, run, stop`. `test_safety` pins it; widening it is a spec change. Never `unsafe` or `media.generate`.
-- The remote app has no write routes and fails closed on Access (spec 9.4): it refuses to start when
-  `REMOTE_ENABLED=1` without `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD`, and `/healthz` is answered before auth.
+- The remote app has no write routes and fails closed on Access (spec 9.4): Cartridge refuses to start (the whole
+  service exits) when `REMOTE_ENABLED=1` without `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD`, and `/healthz` is answered before auth.
 - Rate limits (spec 9.6): launch and menu share a per-device bucket (burst 4, 1 per 15 s); sync is once a minute with
   one in flight per device; at most 50 SSE clients per app.
 - The LAN app refuses proxied requests, enforces the Host allow-list and the write guards, and never sends CORS headers.

@@ -3,8 +3,10 @@
 # MiSTers. Proves the dependencies install on musl, the install layout and permissions, that
 # OpenRC starts and stops the service, that conf.d settings reach the process, and that the LAN
 # app serves while the remote app refuses requests without an Access assertion.
-#   docker run --rm -v "$PWD:/src" -w /src python:3.12-alpine sh deploy/alpine/smoke-test.sh
+#   docker run --rm -v "$PWD:/src:ro" python:3.12-alpine sh /src/deploy/alpine/smoke-test.sh
+# The tree is mounted read-only and copied first, so building and testing as root leave nothing behind.
 set -eux
+export PYTHONDONTWRITEBYTECODE=1
 
 # On failure, say where as a GitHub annotation, with the end of the service log.
 report() {
@@ -18,13 +20,15 @@ trap report EXIT
 
 STEP='install'
 apk add --no-cache openrc curl >/dev/null
-sh deploy/alpine/install.sh /src
+mkdir /tmp/src
+tar -C /src --exclude=./.venv --exclude=./.git --exclude=./.mypy_cache --exclude=./.ruff_cache -cf - . | tar -C /tmp/src -xf -
+sh /tmp/src/deploy/alpine/install.sh /tmp/src
 
 STEP='pytest on musl'
 # Playwright has no musl wheel, so the browser smoke tests (tests/e2e, the e2e CI job) stay out.
 /opt/cartridge/venv/bin/pip install --quiet pytest anyio
 STEP_LOG=/tmp/pytest.log
-cd /src
+cd /tmp/src
 /opt/cartridge/venv/bin/pytest -q -p no:cacheprovider -rf --ignore=tests/e2e >"$STEP_LOG" 2>&1 || { cat "$STEP_LOG"; false; }
 tail -n 3 "$STEP_LOG"
 cd /

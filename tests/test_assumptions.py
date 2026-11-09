@@ -76,7 +76,13 @@ def test_docs_cite_only_real_ids(doc):
 def test_readme_table_matches_the_registry():
     rows = ROW.findall((ROOT / "README.md").read_text())
     assert [(i, c) for i, c, _ in rows] == list(ASSUMPTIONS)
-    assert {s for _, _, s in rows} == {"unverified"}
+    assert {s for _, _, s in rows} <= {"unverified", "verified"}
+
+
+def test_every_id_has_its_own_checklist_section():
+    headings = [ln for ln in (ROOT / "HARDWARE_VALIDATION.md").read_text().splitlines() if ln.startswith("## ")]
+    for i in IDS:
+        assert any(i in ID.findall(h) for h in headings), f"no '## ' heading for {i}"
 
 
 def test_code_cites_only_real_ids_and_every_id_is_used():

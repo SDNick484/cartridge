@@ -13,6 +13,8 @@ if [ -r "$CONF" ]; then
 	# shellcheck disable=SC1090
 	. "$CONF"
 	set +a
+elif [ -e "$CONF" ]; then
+	echo "cartridge: $CONF exists but isn't readable by $(id -un); its settings were NOT loaded (expected root:cartridge 0640)" >&2
 fi
 if [ "$#" -gt 0 ]; then
 	exec /opt/cartridge/venv/bin/cartridge "$@"
