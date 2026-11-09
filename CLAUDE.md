@@ -14,7 +14,7 @@ Zaparoo Core, shows it as a cover-art grid, and launches games on a chosen devic
 - `ids.py`: stable game ids from system and relative path.
 - `db.py`: SQLite schema and queries (FTS search, history, launches).
 - `zaparoo_client.py`: Zaparoo Core WebSocket JSON-RPC client; owns the method allow-list.
-- `registry.py`: device registry, connection state, availability.
+- `registry.py`: device registry and connection state (availability lives in `catalog.py`).
 - `events.py`: SSE hub with client cap.
 - `catalog.py`: library sync per device; present flags.
 - `art.py`: artwork lookup, cache and placeholder tiles.

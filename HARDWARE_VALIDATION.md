@@ -2,7 +2,7 @@
 
 Cartridge is built and tested against a simulated Zaparoo Core (`cartridge simulate`). The claims below came from Zaparoo's documentation, not from a real MiSTer. Run each check against a real device and record the result in the README's assumptions table (change `unverified` to `verified`, or fix the code and this list if the claim is wrong). Each claim is cited in the code as `# ASSUMPTION <id>`; `grep -rn "ASSUMPTION <id>" src` shows where it matters.
 
-Setup: a MiSTer with Zaparoo Core installed and its media database built (README, "Install Zaparoo Core on a MiSTer"), its address in `devices.yaml` (use `192.0.2.10` below as a stand-in), Cartridge running, and a WebSocket client such as `websocat` on the same network. Run `cartridge check` first: it should print `<device>: online`.
+Setup: a MiSTer with Zaparoo Core installed and its media database built (README, "Install Zaparoo Core on a MiSTer"), its address in `devices.yaml` (use `192.0.2.10` below as a stand-in), Cartridge running, and a WebSocket client such as `websocat` on the same network. Run `cartridge check` first: it should print `office: online`.
 
 ## `Z-LEGACY`: unauthenticated LAN access
 
@@ -97,14 +97,14 @@ Claim: when Core requires encryption, it rejects plaintext requests with error c
 3. Look at the device card in Cartridge.
 4. Turn encryption off again and restart Core. Confirm that `encryption = false` is really the setting; if not, fix the README.
 
-Expected: an error response with code `-32002`; the card shows the state **Needs pairing** with the message "<Device> needs pairing: Zaparoo's encryption is on and Cartridge can't pair yet. Turn encryption off in Zaparoo's config (see the README).", and goes back online after step 4.
+Expected: an error response with code `-32002`; the card shows the state **Needs pairing** with the message "Office needs pairing: Zaparoo's encryption is on and Cartridge can't pair yet. Turn encryption off in Zaparoo's config (see the README).", and goes back online after step 4.
 
 ## `L-THUMB-URL`: libretro-thumbnails URL rule
 
-Claim: art lives at `https://thumbnails.libretro.com/<Playlist Name>/Named_Boxarts/<Name>.png`, where `<Name>` is the title with `` & * / : ` < > ? \ | " `` replaced by `_`.
+Claim: art lives at `https://thumbnails.libretro.com/<Playlist Name>/Named_Boxarts/<Name>.png`, where `<Name>` is the ROM file name without its extension, with `` & * / : ` < > ? \ | " `` replaced by `_`.
 
-1. Pick games from at least three systems, one with a reserved character in its title (for example one containing `:` or `&`).
-2. Build the URL by hand from the playlist name (for example `Nintendo - Super Nintendo Entertainment System`) and the title, and request it with `curl -I`.
+1. Pick games from at least three systems, one whose file name contains a reserved character (for example `:` or `&`).
+2. Build the URL by hand from the playlist name (for example `Nintendo - Super Nintendo Entertainment System`) and the ROM file name (without its extension), and request it with `curl -I`.
 3. Run Cartridge with `ART_ONLINE=1` and look at those games' covers.
 
-Expected: `200 image/png` for titles the repository has, and the same covers appear in Cartridge. A title whose reserved characters were replaced with `_` resolves; if it doesn't, the replacement rule in `src/cartridge/art.py` is wrong. A miss is a generated tile, not an error.
+Expected: `200 image/png` for files the repository has, and the same covers appear in Cartridge. A file name whose reserved characters were replaced with `_` resolves; if it doesn't, the replacement rule in `src/cartridge/art.py` is wrong. A miss is a generated tile, not an error.

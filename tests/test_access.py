@@ -271,16 +271,16 @@ async def test_unknown_scope_type_is_denied() -> None:
     assert sent == []
 
 
-ENV = {"CF_ACCESS_TEAM_DOMAIN": f"https://{TEAM}/", "CF_ACCESS_AUD": "a1, a2", "REMOTE_ALLOWED_EMAILS": "A@x.com"}
+ENV = {"CF_ACCESS_TEAM_DOMAIN": f"https://{TEAM}/", "CF_ACCESS_AUD": "a1, a2", "REMOTE_ALLOWED_EMAILS": "A@example.com"}
 
 
 async def test_policy_from_settings() -> None:
     p = policy_from_settings(load_settings(ENV))
     assert p.team_domain == TEAM
     assert p.audiences == ("a1", "a2")
-    assert p.emails == frozenset({"a@x.com"})
+    assert p.emails == frozenset({"a@example.com"})
     assert p.issuer == f"https://{TEAM}"
-    assert "a@x.com" not in repr(p)
+    assert "a@example.com" not in repr(p)
 
 
 async def test_policy_normalises_scheme_case_and_slash() -> None:
