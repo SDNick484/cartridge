@@ -7,6 +7,7 @@ import pytest
 from cartridge import zaparoo_client as zc
 from cartridge.config import DeviceConfig
 from cartridge.ids import normalize_rel_path
+from cartridge.sim.fake_zaparoo import RpcError
 from cartridge.sim.harness import SimDevice, Simulation
 from cartridge.targets import zaparoo as zt
 from cartridge.targets.base import (
@@ -419,10 +420,19 @@ async def test_reads_raise_target_error_sentences(sim: Simulation, make: Make) -
         await collect(t)
 
 
-async def test_read_error_reply_is_target_error(sim: Simulation, make: Make) -> None:
+async def test_read_error_reply_is_target_error(sim: Simulation, make: Make, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = family(sim).fake
+    original = fake._call
+
+    async def failing(method: str, p: dict[str, Any], after: list[tuple[str, dict[str, Any]]]) -> Any:
+        if method == "media.history":
+            raise RpcError("history unavailable")
+        return await original(method, p, after)
+
+    monkeypatch.setattr(fake, "_call", failing)
     t = await online(make(family(sim)))
     with pytest.raises(TargetError, match="Family Room"):
-        await t.history(0.5)  # type: ignore[arg-type]  # the fake answers a non-integer limit with an error reply
+        await t.history(5)
 
 
 async def test_launch_encryption_after_connect_is_offline_not_stale(sim: Simulation, make: Make) -> None:
@@ -444,3 +454,19 @@ async def test_launch_without_zap_script_fails_with_sentence(sim: Simulation, ma
         await t.launch(ref)
     assert "Family Room" in str(info.value)
     assert "run" not in fake.methods
+
+
+async def test_needs_pairing_state_gives_pairing_sentence_on_reads_and_launch(sim: Simulation, make: Make) -> None:
+    dev = family(sim)
+    dev.fake.require_encryption = True
+    t = make(dev)
+    await t.start()
+    await until(lambda: t.status().state == "needs_pairing")
+    with pytest.raises(TargetError) as read_err:
+        await t.systems()
+    assert "Family Room" in str(read_err.value) and "pairing" in str(read_err.value)
+    with pytest.raises(Offline) as launch_err:
+        await t.launch(zt.TargetRef("1", "x"))
+    assert "Family Room" in str(launch_err.value) and "pairing" in str(launch_err.value)
+    with pytest.raises(Offline, match="pairing"):
+        await t.return_to_menu()

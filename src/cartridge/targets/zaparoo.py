@@ -111,6 +111,8 @@ class ZaparooTarget:
         )
 
     def _unreachable(self) -> str:
+        if self._client.needs_pairing:  # the client dropped the socket, so its own error text has no label
+            return self._pairing_message()
         return self._client.error or f"No answer from {self._label}: is it on and on the network?"
 
     async def _read(self, method: str, params: dict[str, Any] | None = None) -> Any:
@@ -326,6 +328,8 @@ class ZaparooTarget:
             raise self._offline() from None
 
     def _offline(self) -> Offline:
+        if self._client.needs_pairing:
+            return Offline(self._pairing_message())
         return Offline(f"{self._label} isn't reachable right now: is it on and on the network?")
 
     def _run_failure(self, exc: ZaparooError) -> LaunchError:
