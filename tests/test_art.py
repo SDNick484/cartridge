@@ -172,6 +172,14 @@ async def test_miss_is_cached_for_7_days(art: ArtCache, net: Net, db: Database, 
     assert len(net.requests) == 2
 
 
+async def test_device_connection_loss_is_transient(art: ArtCache, sim: Simulation, db: Database) -> None:
+    for dev in sim.devices:
+        dev.fake.close_after = "media.image"  # the socket drops mid-request, unanswered
+    got = await art.get(METROID)
+    assert got is not None and not got.found and got.transient
+    assert db.art(METROID) is None  # no 7-day miss for a device that couldn't answer
+
+
 async def test_retry_after_honored(art: ArtCache, net: Net, db: Database, clock: Clock) -> None:
     net.respond = lambda r: httpx.Response(429, headers={"retry-after": "120"})
     got = await art.get(DKC)

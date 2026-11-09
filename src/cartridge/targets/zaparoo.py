@@ -261,16 +261,21 @@ class ZaparooTarget:
 
     async def artwork(self, ref: TargetRef, max_size: int) -> Image | None:
         try:
+            media_id = int(ref.token)
+        except ValueError:
+            return None
+        try:
             result = await self._client.call(
                 "media.image",
-                {
-                    "mediaId": int(ref.token),
-                    "imageTypes": ["boxart", "cover"],
-                    "maxSize": max_size,
-                    "delivery": "inline",
-                },
+                {"mediaId": media_id, "imageTypes": ["boxart", "cover"], "maxSize": max_size, "delivery": "inline"},
             )
-        except (ValueError, ZaparooError, ZaparooTimeout, ZaparooUnavailable):
+        except EncryptionRequired as exc:
+            raise TargetError(self._pairing_message()) from exc
+        except ZaparooUnavailable as exc:  # the device couldn't answer, so it can't say there's no art
+            raise TargetError(self._unreachable()) from exc
+        except ZaparooTimeout as exc:
+            raise TargetError(f"{self._label} didn't answer in time; try again in a moment.") from exc
+        except ZaparooError:
             return None
         # ASSUMPTION Z-IMAGE: no art comes back as an error or as empty data
         data = result.get("data") if isinstance(result, dict) else None

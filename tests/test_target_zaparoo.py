@@ -440,7 +440,24 @@ async def test_offline_target_errors_are_sentences(sim: Simulation, make: Make) 
     ref = zt.TargetRef("1", "x")
     with pytest.raises(Offline):
         await t.launch(ref)
-    assert await t.artwork(ref, 512) is None
+    with pytest.raises(TargetError, match="Family Room"):
+        await t.artwork(ref, 512)  # unreachable is not "no art"
+
+
+async def test_artwork_transport_failures_raise(sim: Simulation, make: Make, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = family(sim).fake
+    t = await online(make(family(sim)))
+    ref = (await collect(t))[0].ref
+    fake.close_after = "media.image"
+    with pytest.raises(TargetError):
+        await t.artwork(ref, 512)
+    t = await online(make(family(sim)))
+    fake.close_after = None
+    fake.silent = True
+    call = t._client.call
+    monkeypatch.setattr(t._client, "call", lambda m, p=None: call(m, p, timeout=0.1))
+    with pytest.raises(TargetError, match="didn't answer"):
+        await t.artwork(ref, 512)
 
 
 async def test_strip_prefixes_skips_rows_outside_prefix(

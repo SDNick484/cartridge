@@ -138,7 +138,8 @@ class LaunchTarget(Protocol):
     """What a device must do. Failures never leak a transport's own exceptions:
 
     - ``systems``, ``catalog`` and ``history`` raise ``TargetError`` (a half-read catalog must fail the sync,
-      so ``catalog`` raises it mid-iteration too). ``artwork`` returns None on any failure.
+      so ``catalog`` raises it mid-iteration too). ``artwork`` returns None when the device has no art and raises
+      ``TargetError`` when it couldn't answer (unreachable, timed out, needs pairing).
     - ``launch`` and ``return_to_menu`` raise ``LaunchError`` subclasses (``StaleRef`` only from ``launch``).
     """
 

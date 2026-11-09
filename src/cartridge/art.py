@@ -31,7 +31,7 @@ from cartridge.catalog import Catalog, utcnow
 from cartridge.db import Database
 from cartridge.ratelimit import TokenBucket
 from cartridge.registry import DeviceRegistry
-from cartridge.targets.base import TargetRef
+from cartridge.targets.base import TargetError, TargetRef
 
 log = logging.getLogger(__name__)
 
@@ -275,8 +275,12 @@ class ArtCache:
             if not self.registry.status(name).online:
                 unreachable = True
                 continue
+            try:
+                image = await target.artwork(TargetRef(media.media_ref, media.rel_path), MAX_SIZE)
+            except TargetError:
+                unreachable = True  # timed out or dropped: it couldn't say whether it has art
+                continue
             asked = True
-            image = await target.artwork(TargetRef(media.media_ref, media.rel_path), MAX_SIZE)
             if image is not None and image.content_type in EXTENSIONS and 0 < len(image.data) <= MAX_BYTES:
                 return _Art(image.data, image.content_type)
         if unreachable:
