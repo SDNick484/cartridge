@@ -75,3 +75,14 @@ async def test_slow_subscriber_drops_oldest_and_never_blocks() -> None:
         assert (await anext(it))["i"] == 50
         rest = [await anext(it) for _ in range(99)]
         assert rest[-1]["i"] == 149
+
+
+async def test_publish_after_close_cannot_evict_the_end_marker() -> None:
+    hub = EventHub()
+    async with hub.subscribe("lan") as it:
+        for i in range(100):
+            hub.publish({"type": "tick", "i": i})
+        hub.close()
+        hub.publish({"type": "late"})
+        got = [e async for e in it]
+        assert len(got) == 99 and got[-1]["i"] == 99

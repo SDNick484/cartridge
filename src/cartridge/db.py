@@ -265,6 +265,10 @@ class Database:
             (id, name, manufacturer, release_date),
         )
 
+    def ensure_system(self, id: str) -> None:
+        """A placeholder for a system a catalog mentions but systems() didn't list; never overwrites a real row."""
+        self._conn.execute("INSERT OR IGNORE INTO systems(id, name) VALUES (?, ?)", (id, id))
+
     def set_device_system(self, device: str, system_id: str, available: bool, media_count: int, synced_at: str) -> None:
         self._conn.execute(
             "INSERT INTO device_systems(device, system_id, available, media_count, synced_at) VALUES (?, ?, ?, ?, ?) "
@@ -292,11 +296,15 @@ class Database:
             (device, game_id, media_ref, abs_path, synced_at),
         )
 
-    def mark_missing(self, device: str, before: str) -> int:
-        """Flip present rows last seen before `before` to 0; returns how many flipped."""
+    def mark_missing(self, device: str, run_stamp: str) -> int:
+        """Flip present rows not stamped with this run's `run_stamp` to 0; returns how many flipped.
+
+        Equality, not ordering: every row a run touches carries exactly its stamp, so a clock that
+        stepped backwards between runs can't leave unseen rows marked present.
+        """
         cur = self._conn.execute(
-            "UPDATE device_media SET present = 0 WHERE device = ? AND present = 1 AND synced_at < ?",
-            (device, before),
+            "UPDATE device_media SET present = 0 WHERE device = ? AND present = 1 AND synced_at <> ?",
+            (device, run_stamp),
         )
         return cur.rowcount
 

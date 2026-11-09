@@ -4,8 +4,8 @@ A run reads the device first (systems, then every catalog page) and only then ap
 transaction, so a socket that drops mid-page leaves the catalog exactly as it was and the run is
 recorded ``failed`` with the target's sentence. Reading before the transaction also keeps the shared
 connection from being held open across awaits. Every row a run touches is stamped with the run's
-start time and ``mark_missing`` flips rows older than it, so all timestamps share one format:
-UTC ISO-8601 with microseconds (compared as strings).
+start time and ``mark_missing`` flips rows carrying any other stamp (no clock ordering involved).
+Timestamps are UTC ISO-8601 with microseconds.
 """
 
 from __future__ import annotations
@@ -97,12 +97,14 @@ class Catalog:
         info = self.registry.info(device)
         target = self.registry.target(device)
         assert info is not None and target is not None
-        started = self._stamp()
-        run_id = self.db.start_sync_run(device, started)
-        self.hub.publish({"type": "sync.started", "device": device})
+        label = info.label
+        run_id: int | None = None
         seen = added = missing = 0
         error: str | None = None
         try:
+            started = self._stamp()
+            run_id = self.db.start_sync_run(device, started)
+            self.hub.publish({"type": "sync.started", "device": device})
             systems = await target.systems()
             entries = [entry async for entry in target.catalog()]
             seen = len(entries)
@@ -113,15 +115,20 @@ class Catalog:
             error = str(exc)
         except Exception:
             log.exception("Sync of %s failed unexpectedly.", device)
-            error = f"Sync of {info.label} failed unexpectedly; see the server log."
+            error = f"Sync of {label} failed unexpectedly; see the server log."
         except asyncio.CancelledError:
-            self.db.finish_sync_run(run_id, self._stamp(), "failed", 0, 0, 0, f"Sync of {info.label} was interrupted.")
+            if run_id is not None:
+                self.db.finish_sync_run(run_id, self._stamp(), "failed", 0, 0, 0, f"Sync of {label} was interrupted.")
             self.hub.publish({"type": "sync.finished", "device": device, "status": "failed"})
             raise
         status: Literal["ok", "failed"] = "ok" if error is None else "failed"
         if error is not None:
             seen = added = missing = 0
-        self.db.finish_sync_run(run_id, self._stamp(), status, seen, added, missing, error)
+        if run_id is not None:
+            try:
+                self.db.finish_sync_run(run_id, self._stamp(), status, seen, added, missing, error)
+            except Exception:
+                log.exception("Could not record the result of the sync of %s.", device)
         self.hub.publish({"type": "sync.finished", "device": device, "status": status})
         return SyncResult(device, status, seen, added, missing, error)
 
@@ -130,7 +137,11 @@ class Catalog:
             self.db.upsert_system(s.system_id, s.name, s.manufacturer, s.release_date)
             self.db.set_device_system(device, s.system_id, s.available, s.media_count, stamp)
         added = 0
+        known = {s.system_id for s in systems}
         for e in entries:
+            if e.system_id not in known:  # systems() and catalog() are separate reads; the device may have changed
+                self.db.ensure_system(e.system_id)
+                known.add(e.system_id)
             gid = game_id(e.system_id, e.rel_path)
             if self.db.upsert_game(gid, e.system_id, e.title, stamp):
                 added += 1

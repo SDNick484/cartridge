@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import pytest
@@ -9,7 +10,7 @@ from cartridge.events import EventHub
 from cartridge.ids import game_id
 from cartridge.registry import DeviceRegistry
 from cartridge.sim.harness import Simulation
-from cartridge.targets.base import SystemAvailability
+from cartridge.targets.base import CatalogEntry, SystemAvailability, TargetRef
 from tests.conftest import family
 
 pytestmark = pytest.mark.anyio
@@ -91,6 +92,7 @@ async def test_failed_run_changes_nothing(sim: Simulation, db: Database, registr
         result = await cat.sync("family-room")
         assert [(await anext(events))["type"] for _ in range(2)] == ["sync.started", "sync.finished"]
     assert result.status == "failed" and result.error
+    assert "unexpectedly" not in result.error and "Family Room" in result.error
     assert media_rows(db, "family-room") == before
     last = db.last_sync("family-room")
     assert last is not None and last.status == "failed" and last.error == result.error
@@ -182,3 +184,99 @@ async def test_sync_publishes_events(sim: Simulation, db: Database, registry: De
 def test_utcnow_is_aware_utc() -> None:
     assert utcnow().tzinfo == UTC
     assert datetime.fromisoformat(utcnow().isoformat(timespec="microseconds")).tzinfo == UTC
+
+
+async def test_unlisted_system_gets_placeholder_and_entry_is_kept(
+    sim: Simulation, db: Database, registry: DeviceRegistry
+) -> None:
+    cat, _ = make(db, registry)
+    target = registry.target("family-room")
+    assert target is not None
+    real = target.catalog
+
+    async def extra() -> AsyncIterator[CatalogEntry]:
+        async for e in real():
+            yield e
+        yield CatalogEntry("Odd", "Odd Game", "Odd Game.bin", "/media/fat/games/Odd/Odd Game.bin", TargetRef("9", "x"))
+
+    target.catalog = extra  # type: ignore[method-assign]
+    result = await cat.sync("family-room")
+    assert result.status == "ok" and result.seen == len(family(sim).fake.media) + 1
+    gid = game_id("Odd", "Odd Game.bin")
+    assert media_rows(db, "family-room")[gid][1] is True
+    assert db.game(gid) is not None
+
+
+async def test_start_failure_still_returns_a_result(
+    sim: Simulation, db: Database, registry: DeviceRegistry, caplog: pytest.LogCaptureFixture
+) -> None:
+    cat, _ = make(db, registry)
+
+    def boom(*_: object) -> int:
+        raise RuntimeError("disk full")
+
+    db.start_sync_run = boom  # type: ignore[method-assign]
+    result = await cat.sync("family-room")
+    assert result.status == "failed"
+    assert result.error == "Sync of Family Room failed unexpectedly; see the server log."
+    assert "disk full" in caplog.text
+
+
+async def test_backwards_clock_still_flips_unseen(sim: Simulation, db: Database, registry: DeviceRegistry) -> None:
+    times = iter([datetime(2030, 1, 1, tzinfo=UTC)] * 2 + [datetime(2020, 1, 1, tzinfo=UTC)] * 20)
+    cat = Catalog(db, registry, EventHub(), now=lambda: next(times))
+    await cat.sync("family-room")
+    gone = family(sim).fake.media.pop()
+    result = await cat.sync("family-room")
+    assert result.status == "ok" and result.missing == 1
+    assert media_rows(db, "family-room")[game_id(gone["system"]["id"], gone["relativePath"])][1] is False
+
+
+async def test_joining_via_sync_now_takes_no_token(sim: Simulation, db: Database, registry: DeviceRegistry) -> None:
+    clock = Clock()
+    cat, _ = make(db, registry, clock)
+    target = registry.target("family-room")
+    assert target is not None
+    real = target.systems
+    gate = asyncio.Event()
+
+    async def slow() -> list[SystemAvailability]:
+        await gate.wait()
+        return await real()
+
+    target.systems = slow  # type: ignore[method-assign]
+    first = asyncio.ensure_future(cat.sync_now("family-room"))
+    await asyncio.sleep(0)
+    joined = asyncio.ensure_future(cat.sync_now("family-room"))  # bucket is empty: a token take would refuse
+    await asyncio.sleep(0)
+    gate.set()
+    assert (await first).status == (await joined).status == "ok"
+    clock.t += 30  # no second token was spent: the one refill still has 30s to go
+    with pytest.raises(SyncRateLimited) as exc:
+        await cat.sync_now("family-room")
+    assert 29 < exc.value.wait <= 30
+
+
+async def test_cancelled_run_records_failed_and_reraises(
+    sim: Simulation, db: Database, registry: DeviceRegistry
+) -> None:
+    cat, hub = make(db, registry)
+    target = registry.target("family-room")
+    assert target is not None
+    started = asyncio.Event()
+
+    async def hang() -> list[SystemAvailability]:
+        started.set()
+        await asyncio.sleep(60)
+        return []
+
+    target.systems = hang  # type: ignore[method-assign]
+    async with hub.subscribe("lan") as events:
+        task = asyncio.ensure_future(cat._run("family-room"))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert [(await anext(events))["type"] for _ in range(2)] == ["sync.started", "sync.finished"]
+    last = db.last_sync("family-room")
+    assert last is not None and last.status == "failed" and last.error and "interrupted" in last.error

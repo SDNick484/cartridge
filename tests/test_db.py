@@ -70,11 +70,11 @@ def test_mark_missing_only_flips_unseen_on_that_device(db: Database) -> None:
     add(db, "g2", "Two")
     db.upsert_device_media("office", "g1", "r", "/o/g1", T0)
     db.upsert_device_media("family-room", "g1", "r2", "/media/g1.sfc", T2)  # seen in the new run
-    assert db.mark_missing("family-room", T1) == 1
+    assert db.mark_missing("family-room", T2) == 1
     assert db.device_media("family-room", "g1").present is True  # type: ignore[union-attr]
     assert db.device_media("family-room", "g2").present is False  # type: ignore[union-attr]
     assert db.device_media("office", "g1").present is True  # type: ignore[union-attr]
-    assert db.mark_missing("family-room", T1) == 0
+    assert db.mark_missing("family-room", T2) == 0
     db.upsert_device_media("family-room", "g2", "r3", "/media/g2.sfc", T2)
     assert db.device_media("family-room", "g2").present is True  # type: ignore[union-attr]
     assert db.game_id_for_path("family-room", "/media/g2.sfc") == "g2"

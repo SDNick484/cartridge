@@ -32,6 +32,8 @@ class EventHub:
         return len(self._subs[pool])
 
     def publish(self, event: Event) -> None:
+        if self._closed:  # a late event must not evict the end-of-stream marker
+            return
         for queue in self._subs["lan"] | self._subs["remote"]:
             self._offer(queue, event)
 
