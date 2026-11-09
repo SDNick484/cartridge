@@ -116,8 +116,11 @@ class ZaparooTarget:
             return self._pairing_message()
         return self._client.error or f"No answer from {self._label}: is it on and on the network?"
 
-    async def _read(self, method: str, params: dict[str, Any] | None = None) -> Any:
-        """A client call for the read methods: Zaparoo's exceptions become TargetError sentences."""
+    async def _read(self, method: str, params: dict[str, Any] | None = None, *, error_is_none: bool = False) -> Any:
+        """A client call for the read methods: Zaparoo's exceptions become TargetError sentences.
+
+        With ``error_is_none``, an error reply from Core returns None instead: the device answered, just not with data.
+        """
         label = self._label
         try:
             return await self._client.call(method, params)
@@ -128,6 +131,8 @@ class ZaparooTarget:
         except ZaparooTimeout as exc:
             raise TargetError(f"{label} didn't answer in time; try again in a moment.") from exc
         except ZaparooError as exc:
+            if error_is_none:
+                return None
             log.warning("%s: %s failed: %s", self.name, method, exc)
             raise TargetError(f"{label} couldn't answer a request ({method}); the server log has details.") from exc
 
@@ -264,19 +269,12 @@ class ZaparooTarget:
             media_id = int(ref.token)
         except ValueError:
             return None
-        try:
-            result = await self._client.call(
-                "media.image",
-                {"mediaId": media_id, "imageTypes": ["boxart", "cover"], "maxSize": max_size, "delivery": "inline"},
-            )
-        except EncryptionRequired as exc:
-            raise TargetError(self._pairing_message()) from exc
-        except ZaparooUnavailable as exc:  # the device couldn't answer, so it can't say there's no art
-            raise TargetError(self._unreachable()) from exc
-        except ZaparooTimeout as exc:
-            raise TargetError(f"{self._label} didn't answer in time; try again in a moment.") from exc
-        except ZaparooError:
-            return None
+        # A device that couldn't answer raises TargetError: it can't say there's no art.
+        result = await self._read(
+            "media.image",
+            {"mediaId": media_id, "imageTypes": ["boxart", "cover"], "maxSize": max_size, "delivery": "inline"},
+            error_is_none=True,
+        )
         # ASSUMPTION Z-IMAGE: no art comes back as an error or as empty data
         data = result.get("data") if isinstance(result, dict) else None
         if not isinstance(data, str) or not data:
