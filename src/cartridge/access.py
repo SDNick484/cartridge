@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -58,10 +59,14 @@ class AccessPolicy:
 
 def policy_from_settings(settings: Settings) -> AccessPolicy:
     """The policy for the remote app; refuses to build one that would accept anything."""
-    team = (settings.cf_access_team_domain or "").strip().removeprefix("https://").rstrip("/")
+    team = re.sub(r"^https?://", "", (settings.cf_access_team_domain or "").strip(), flags=re.IGNORECASE).rstrip("/")
     if not team or not settings.cf_access_aud:
         raise ConfigError(
             "The remote app needs CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD; set them to your Cloudflare Access values."
+        )
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", team):
+        raise ConfigError(
+            "CF_ACCESS_TEAM_DOMAIN must be a hostname such as example.cloudflareaccess.com, without a path or port."
         )
     return AccessPolicy(
         team_domain=team,
@@ -152,9 +157,11 @@ async def _json(send: Send, status: int, body: Mapping[str, Any]) -> None:
 
 
 class AccessMiddleware:
-    """Lets an http request through only with a valid Access assertion.
+    """Lets a request through only with a valid Access assertion; unknown scope types are denied.
 
-    Non-http scopes (lifespan) pass untouched. The health check is answered before auth.
+    Lifespan passes untouched. Http and websocket both need the assertion (a failed websocket is
+    closed with 1008 before the app sees it); any other scope type never reaches the app. The health
+    check is answered before auth.
     """
 
     def __init__(self, app: ASGIApp, verifier: AccessVerifier, *, health_check: Callable[[], Awaitable[bool]]) -> None:
@@ -163,10 +170,14 @@ class AccessMiddleware:
         self.health_check = health_check
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        kind = scope["type"]
+        if kind == "lifespan":
             await self.app(scope, receive, send)
             return
-        if scope["path"] == HEALTH_PATH and scope.get("method") in ("GET", "HEAD"):
+        if kind not in ("http", "websocket"):
+            log.warning("Denied unknown scope type %r", kind)
+            return
+        if kind == "http" and scope["path"] == HEALTH_PATH and scope.get("method") in ("GET", "HEAD"):
             await self._health(send)
             return
         headers = dict(scope.get("headers") or [])
@@ -176,16 +187,27 @@ class AccessMiddleware:
                 raise AccessDenied("no Cloudflare Access assertion (request didn't come through Access)")
             await self.verifier.verify(token)
         except AccessDenied as exc:
-            log.info("Denied %s %s: %s", scope.get("method"), scope["path"], exc)
-            await _json(send, 403, FORBIDDEN_BODY)
+            log.info("Denied %s %s: %s", scope.get("method", kind), scope["path"], exc)
+            await self._deny(kind, send)
+            return
+        except Exception as exc:  # a failing key fetch must deny, not 500
+            log.warning("Access verification failed (%s); denying %s", type(exc).__name__, scope["path"])
+            await self._deny(kind, send)
             return
         await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _deny(kind: str, send: Send) -> None:
+        if kind == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+        else:
+            await _json(send, 403, FORBIDDEN_BODY)
 
     async def _health(self, send: Send) -> None:
         try:
             ready = await self.health_check()
-        except Exception:
-            log.warning("Health check failed", exc_info=True)
+        except Exception as exc:
+            log.warning("Health check failed (%s)", type(exc).__name__)
             ready = False
         if ready:
             await _json(send, 200, {"status": "ok"})
