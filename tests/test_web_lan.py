@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import json
+import re
 import socket
 import uuid
 from pathlib import Path
@@ -250,7 +251,9 @@ async def test_index_and_static(lan: httpx.AsyncClient) -> None:
     r = await lan.get("/")
     assert r.status_code == 200 and "<title>Cartridge</title>" in r.text
     assert r.headers["content-type"].startswith("text/html")
-    assert "<script" not in r.text and "<style" not in r.text and " style=" not in r.text
+    # CSP forbids inline code: scripts must be external (`src=`), and there is no <style> or style="".
+    assert not re.search(r"<script(?![^>]*\bsrc=)", r.text)
+    assert "<style" not in r.text and " style=" not in r.text
     assert (await lan.get("/static/index.html")).status_code == 200
 
 

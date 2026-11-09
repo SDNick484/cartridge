@@ -33,6 +33,18 @@ jobs:
       - run: pytest
       - run: python scripts/check_js.py
 
+  # Browser smoke tests: Chromium drives the UI against `cartridge simulate`.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m pytest -m e2e
+
   # The files shared with the sibling servers (shared.lock, scripts/sync_shared.py) must
   # match mcp-server-shared, the source of truth. On pushes and PRs: at the locked commit,
   # so a copy edited here fails, and a PR is never judged on changes made elsewhere. On the
