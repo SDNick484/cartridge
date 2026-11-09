@@ -227,11 +227,12 @@ class Database:
         self._conn.close()
 
     def ping(self) -> bool:
+        """Readiness: ``PRAGMA quick_check`` passes, so a corrupt database reports not ready."""
         try:
-            self._conn.execute("SELECT 1").fetchone()
+            verdict = self._conn.execute("PRAGMA quick_check").fetchone()
         except sqlite3.Error:
             return False
-        return True
+        return verdict is not None and verdict[0] == "ok"
 
     def _migrate(self) -> None:
         version = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
