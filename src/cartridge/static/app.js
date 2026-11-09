@@ -4,7 +4,7 @@ import { events, getJSON } from "./api.js";
 import { registerSheet, toast } from "./dom.js";
 import { initDevices, setDevices, updateDevice } from "./devices.js";
 import { initFocus } from "./focus.js";
-import { initGrid, loadChips, refresh, reload, setSynced } from "./grid.js";
+import { initGrid, loadChips, refresh, reload, setSynced, showingRecent } from "./grid.js";
 import { initSheet, openGame } from "./sheet.js";
 
 const $ = (id) => document.getElementById(id);
@@ -90,6 +90,7 @@ async function main() {
         wasDown = false;
       } else if (type === "device") {
         updateDevice(data);
+        if (showingRecent()) refresh(); // history ingest announces itself as a device event
       } else {
         // sync.started / sync.finished: the device card's sync state changed.
         refreshDevices();

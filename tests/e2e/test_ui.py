@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+import uuid
 from collections.abc import Callable
 
 import pytest
@@ -223,4 +225,24 @@ def test_misconfigured_device_is_never_offered(misconfigured_server: str, open_p
     expect(sheet.locator(".device-card", has_text="Cabinet")).to_contain_text("Misconfigured")
     expect(sheet.get_by_role("button", name="Use Cabinet")).to_have_count(0)
     expect(sheet.get_by_role("button", name="Use Office")).to_have_count(1)
+    no_console_problems(page)
+
+
+def test_recent_shows_the_device_and_refreshes_live(fresh_server: str, open_page: OpenPage) -> None:
+    page = open_page(fresh_server)
+    expect(tiles(page).first).to_be_visible()
+    page.locator('.chip[data-key="recent"]').click()
+    expect(page.locator(".tile", has_text="Super Metroid")).to_contain_text("Family Room")
+    expect(page.locator(".tile", has_text="Contra")).to_contain_text("Office")
+    before = tiles(page).count()
+    tiles(page).first.focus()
+    headers = {"Content-Type": "application/json", "X-Cartridge": "1"}
+    found = page.request.get(f"{fresh_server}/api/games?q=gunstar").json()["games"]
+    body = {"device": "family-room", "game": found[0]["id"], "replace": False, "request_id": str(uuid.uuid4())}
+    launched = page.request.post(f"{fresh_server}/api/launch", headers=headers, data=json.dumps(body))
+    assert launched.status == 200
+    assert page.request.post(f"{fresh_server}/api/devices/family-room/menu", headers=headers, data="{}").status == 200
+    expect(tiles(page)).to_have_count(before + 1)  # history was ingested; the open view refreshed itself
+    expect(page.locator(".tile", has_text="Gunstar Heroes")).to_contain_text("Family Room")
+    assert page.evaluate("document.activeElement.classList.contains('tile')")
     no_console_problems(page)

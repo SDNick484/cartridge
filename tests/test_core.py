@@ -208,3 +208,12 @@ async def test_close_core_with_sync_in_flight(sim: Simulation, tmp_path: Path) -
     await close_core(core)  # must not raise
     await asyncio.sleep(0)
     assert {t for t in asyncio.all_tasks() if not t.done()} <= before
+
+
+async def test_history_ingest_publishes_a_device_event(sim: Simulation, running: Core) -> None:
+    await settled(running, 2)
+    assert running.background is not None
+    async with running.hub.subscribe("lan") as events:
+        await running.background._ingest("family-room")
+        event = await asyncio.wait_for(anext(events), 2)
+    assert event == {"type": "device", "device": "family-room"}

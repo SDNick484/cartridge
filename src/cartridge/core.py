@@ -177,6 +177,7 @@ class Background:
 
     async def _ingest(self, name: str) -> None:
         await self.core.catalog.ingest_history(name)
+        self.core.hub.publish({"type": "device", "device": name})  # an open Recently played view refreshes on it
 
     async def _prefetch(self, name: str) -> None:
         ids: list[str] = []

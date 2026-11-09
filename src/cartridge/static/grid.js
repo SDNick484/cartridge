@@ -2,7 +2,7 @@
 
 import { getJSON } from "./api.js";
 import { bus, clear, el } from "./dom.js";
-import { getDevices, getSelected, syncNow } from "./devices.js";
+import { deviceByName, getDevices, getSelected, syncNow } from "./devices.js";
 
 const PAGE_SIZE = 120;
 const MAX_LIMIT = 500; // the server caps a page here
@@ -102,6 +102,8 @@ function renderToggle() {
 
 // -- loading ------------------------------------------------------------------------------------
 
+export const showingRecent = () => view === "recent";
+
 export function reload() {
   generation += 1;
   count = 0;
@@ -130,13 +132,21 @@ function gamesPath(offset, limit) {
 async function recentGames() {
   const device = getSelected();
   const rows = await getJSON("/api/recent");
-  const ids = [];
+  const seen = new Set();
+  const picked = [];
   for (const row of rows) {
-    if (!row.game || ids.includes(row.game)) continue;
+    if (!row.game || seen.has(row.game)) continue;
     if (device && onlyDevice && row.device !== device.name) continue;
-    ids.push(row.game);
+    seen.add(row.game);
+    picked.push(row);
   }
-  const games = await Promise.all(ids.map((id) => getJSON(`/api/games/${encodeURIComponent(id)}`).catch(() => null)));
+  const games = await Promise.all(
+    picked.map((row) =>
+      getJSON(`/api/games/${encodeURIComponent(row.game)}`)
+        .then((game) => ({ ...game, recent: row }))
+        .catch(() => null),
+    ),
+  );
   const needle = query.toLowerCase();
   return games.filter((g) => g && g.title.toLowerCase().includes(needle));
 }
@@ -235,8 +245,18 @@ function tile(game) {
     el("span", { class: "frame" }, el("img", { src: `/art/${encodeURIComponent(game.id)}`, loading: "lazy", alt: "" })),
     el("span", { class: "tile-title", text: game.title }),
     el("span", { class: "tile-sub", text: game.system_name }),
+    game.recent ? el("span", { class: "tile-sub", text: recentLine(game.recent) }) : null,
     reason ? el("span", { class: "tile-reason", text: reason }) : null,
   );
+}
+
+/** Which device it was played on (spec 7.2), and how stale that device's history is when it is offline. */
+function recentLine(row) {
+  const device = deviceByName(row.device);
+  const tag = device ? device.label : row.device;
+  if (!row.as_of) return tag;
+  const at = new Date(row.as_of);
+  return `${tag}, as of ${Number.isNaN(at.getTime()) ? row.as_of : at.toLocaleString()}`;
 }
 
 function showMessage(heading, text, ...extra) {
