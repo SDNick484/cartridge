@@ -46,7 +46,8 @@ RECENT_LIMIT = 50
 DEFAULT_LIMIT = 120
 MAX_LIMIT = 500
 ART_FOUND_CACHE = "public, max-age=604800"
-ART_PLACEHOLDER_CACHE = "public, max-age=3600"  # placeholders expire sooner so later-found art shows up
+ART_PLACEHOLDER_CACHE = "public, max-age=3600"  # a recorded miss expires sooner so later-found art shows up
+ART_TRANSIENT_CACHE = "no-cache"  # the sources couldn't tell: revalidate (the ETag makes it cheap) until they can
 
 # -- errors and headers ---------------------------------------------------------------------------
 
@@ -201,7 +202,7 @@ def read_routes(core: Core, mode: Mode, *, ping_seconds: float = PING_SECONDS) -
         result = await core.art.get(game_id) if is_game_id(game_id) else None
         if result is None:
             raise ApiError(404, "unknown_game", "That game isn't in the catalog.")
-        cache = ART_FOUND_CACHE if result.found else ART_PLACEHOLDER_CACHE
+        cache = ART_FOUND_CACHE if result.found else ART_TRANSIENT_CACHE if result.transient else ART_PLACEHOLDER_CACHE
         headers = {"ETag": result.etag, "Cache-Control": cache}
         if _etag_matches(request.headers.get("if-none-match"), result.etag):
             return Response(status_code=304, headers=headers)

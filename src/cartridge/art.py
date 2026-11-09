@@ -130,10 +130,11 @@ class ArtResult:
     content_type: str
     etag: str
     found: bool
+    transient: bool = False  # a placeholder because a source couldn't tell, with no miss recorded: don't cache it
 
 
-def _result(body: bytes, content_type: str, found: bool) -> ArtResult:
-    return ArtResult(body, content_type, '"' + hashlib.sha256(body).hexdigest()[:16] + '"', found)
+def _result(body: bytes, content_type: str, found: bool, transient: bool = False) -> ArtResult:
+    return ArtResult(body, content_type, '"' + hashlib.sha256(body).hexdigest()[:16] + '"', found, transient)
 
 
 @dataclass(frozen=True)
@@ -240,11 +241,12 @@ class ArtCache:
             self.db.set_art(
                 game_id, "none", None, None, "none", self._stamp(now), self._stamp(now + timedelta(days=MISS_DAYS))
             )
-        return self._placeholder(game.title, game.system_id)
+            return self._placeholder(game.title, game.system_id)
+        return self._placeholder(game.title, game.system_id, transient=True)
 
     @staticmethod
-    def _placeholder(title: str, system_id: str) -> ArtResult:
-        return _result(placeholder_svg(title, system_id), "image/svg+xml", False)
+    def _placeholder(title: str, system_id: str, transient: bool = False) -> ArtResult:
+        return _result(placeholder_svg(title, system_id), "image/svg+xml", False, transient)
 
     def _store(self, game_id: str, art: _Art, source: str) -> ArtResult:
         rel = f"{game_id[:2]}/{game_id}.{EXTENSIONS[art.content_type]}"

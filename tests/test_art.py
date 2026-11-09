@@ -158,6 +158,7 @@ def test_libretro_url_replaces_every_reserved_character() -> None:
 async def test_miss_is_cached_for_7_days(art: ArtCache, net: Net, db: Database, clock: Clock) -> None:
     got = await art.get(DKC)
     assert got is not None and not got.found and got.content_type == "image/svg+xml"
+    assert not got.transient  # a recorded miss
     row = db.art(DKC)
     assert row is not None and row.status == "none" and row.file is None
     assert row.retry_after == (T0 + timedelta(days=7)).isoformat(timespec="microseconds")
@@ -217,7 +218,7 @@ async def test_network_error_records_no_miss(art: ArtCache, net: Net, db: Databa
 
     net.respond = boom
     got = await art.get(DKC)
-    assert got is not None and not got.found
+    assert got is not None and not got.found and got.transient
     assert db.art(DKC) is None
 
 

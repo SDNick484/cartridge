@@ -463,6 +463,21 @@ async def test_placeholder_cache_is_short(lan: httpx.AsyncClient) -> None:
     assert r.headers["cache-control"] == "public, max-age=3600"
 
 
+async def test_transient_placeholder_is_not_cached(core: Core, lan: httpx.AsyncClient) -> None:
+    async def unsure(game_id: str, system_id: str) -> str:
+        return "unknown"
+
+    core.db._conn.execute("DELETE FROM art")  # no recorded miss for any game
+    core.art._from_device = unsure  # type: ignore[method-assign]
+    core.art._from_libretro = unsure  # type: ignore[method-assign]
+    r = await lan.get(f"/art/{FAMILY_ONLY}")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg")
+    assert r.headers["cache-control"] == "no-cache" and r.headers["etag"]
+    assert core.db.art(FAMILY_ONLY) is None  # nothing was recorded
+    again = await lan.get(f"/art/{FAMILY_ONLY}", headers={"If-None-Match": r.headers["etag"]})
+    assert again.status_code == 304 and again.headers["cache-control"] == "no-cache"
+
+
 # -- SSE ------------------------------------------------------------------------------------------
 
 
