@@ -39,6 +39,7 @@ LIBRETRO_BASE = "https://thumbnails.libretro.com"
 MAX_SIZE = 512
 MAX_BYTES = 5 * 1024 * 1024
 MISS_DAYS = 7
+DEVICE_COOL_OFF = 60.0  # seconds a device that couldn't answer media.image is left alone
 DEFAULT_PAUSE = 60.0
 PREFETCH_CONCURRENCY = 2
 REQUEST_TIMEOUT = 10.0
@@ -175,6 +176,7 @@ class ArtCache:
         self._clock = clock
         self._bucket = TokenBucket(capacity=1, rate=1, clock=clock, sleep=sleep)
         self._paused_until = 0.0
+        self._device_paused: dict[str, float] = {}  # device name -> monotonic time it may be asked again
         self._inflight: dict[str, asyncio.Task[ArtResult]] = {}
 
     def _stamp(self, at: datetime | None = None) -> str:
@@ -272,13 +274,14 @@ class ArtCache:
             media = self.db.device_media(name, game_id)
             if target is None or media is None or not media.present:
                 continue
-            if not self.registry.status(name).online:
+            if not self.registry.status(name).online or self._clock() < self._device_paused.get(name, 0.0):
                 unreachable = True
                 continue
             try:
                 image = await target.artwork(TargetRef(media.media_ref, media.rel_path), MAX_SIZE)
             except TargetError:
                 unreachable = True  # timed out or dropped: it couldn't say whether it has art
+                self._device_paused[name] = self._clock() + DEVICE_COOL_OFF  # don't pile a grid page onto it
                 continue
             asked = True
             if image is not None and image.content_type in EXTENSIONS and 0 < len(image.data) <= MAX_BYTES:
