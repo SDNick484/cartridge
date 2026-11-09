@@ -183,6 +183,11 @@ def _entry_label(index: int, raw: object) -> str:
     return f"entry #{index + 1}"
 
 
+def _text(value: object) -> str:
+    """A setting as text; blank or null (`label:` with nothing after it) is empty, never the string 'None'."""
+    return "" if value is None else str(value).strip()
+
+
 def _check_entry(label: str, raw: dict[str, Any], seen: set[str]) -> tuple[DeviceConfig | None, list[str], str | None]:
     """Return (device if clean, sentences, name if valid and unique)."""
     errs: list[str] = []
@@ -223,15 +228,15 @@ def _check_entry(label: str, raw: dict[str, Any], seen: set[str]) -> tuple[Devic
         errs.append(f"{label}: strip_prefixes must be a list of absolute paths starting with /.")
         prefixes = []
 
-    label_text = raw.get("label", name)
-    model = raw.get("model", "")
+    label_text = _text(raw.get("label")) or name
+    model = _text(raw.get("model"))
     if errs or good_name is None:
         return None, errs, good_name
     return (
         DeviceConfig(
             name=good_name,
             label=str(label_text),
-            model=str(model),
+            model=model,
             platform="mister",
             transport="zaparoo",
             host=str(host),

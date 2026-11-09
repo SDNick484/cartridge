@@ -190,3 +190,10 @@ def test_non_utf8_file_is_config_error(tmp_path: Path) -> None:
     p.write_bytes("devices:\n  - {name: x, host: example.com, label: Sal\u00f3n}\n".encode("latin-1"))
     with pytest.raises(ConfigError, match="UTF-8"):
         load_devices(p)
+
+
+@pytest.mark.parametrize("blank", ["", "null", "~", '""', "'   '"])
+def test_blank_label_and_model_fall_back(tmp_path: Path, blank: str) -> None:
+    text = f"devices:\n  - {{name: x, host: example.com, label: {blank}, model: {blank}}}\n"
+    (dev,) = load_devices(write(tmp_path, text)).devices
+    assert (dev.label, dev.model) == ("x", "")
